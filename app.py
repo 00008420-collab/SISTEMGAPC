@@ -1,30 +1,44 @@
-# app.py
 import streamlit as st
+from auth.login import login_user
 from db import test_connection, get_table_names
-from auth.login import login_user, logout_user, current_user
 
 st.set_page_config(page_title="SGAPC", layout="wide")
-st.title("SGAPC - Menú principal")
 
-# login
-with st.sidebar:
-    if "sgapc_user" not in st.session_state:
-        login_user()
-    else:
-        u = current_user()
-        st.markdown(f"**Conectado como:** {u.get('username')}")
-        if st.button("Cerrar sesión"):
-            logout_user()
+# -------------------------------
+# 1. Autenticación
+# -------------------------------
+user = login_user()
+if not user:
+    st.stop()
 
-# comprobación BD
-ok, msg = test_connection()
-if ok:
-    st.success("Conexión establecida ✅")
-    tables = get_table_names()
-    st.write("Tablas detectadas:", ", ".join(tables))
+st.success(f"Bienvenido, {user['username']}")
+
+# -------------------------------
+# 2. Comprobación de BD
+# -------------------------------
+st.header("🔍 Comprobación rápida de la base de datos")
+
+conn_ok = test_connection()
+
+if conn_ok:
+    st.success("Conexión establecida con la base de datos ✔️")
 else:
-    st.error(f"Error conectando a la base de datos: {msg}")
-    st.info("Revisa los secrets en Streamlit Cloud (Settings → Secrets).")
+    st.error("❌ No fue posible conectar a la base de datos")
+    st.stop()
 
-st.markdown("---")
-st.markdown("Abre los CRUDs desde el menú lateral `Pages` o selecciona una Page.")
+# Obtener tablas
+tables = get_table_names()
+
+if not tables:
+    st.warning("No fue posible obtener la lista de tablas.")
+else:
+    st.write("### Tablas detectadas:")
+    st.write(", ".join(tables))
+
+# -------------------------------
+# 3. Navegación a CRUDs
+# -------------------------------
+st.header("📂 Módulos disponibles (CRUDs)")
+
+st.info("Selecciona cualquier página desde el menú lateral izquierdo (Pages).")
+
