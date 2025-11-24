@@ -1,45 +1,42 @@
 # auth/login.py
 import streamlit as st
+from db import run_query
+from auth import load_permissions_for_role, get_user_role_id
+import hashlib
 
-def authenticate(username, password):
-    """
-    Autenticación de ejemplo. Cambia esto por verificación real contra tu BD.
-    Actualmente acepta cualquier usuario si la contraseña es 'secret'.
-    """
-    if username and password == "secret":
-        return {"username": username, "role": "admin"}
-    return None
+def hash_password(raw):
+    # simple hashing: usa en pruebas. En producción usa bcrypt.
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+def verify_password(username, raw_password):
+    # compara hash (asume password_hash en users)
+    rows = run_query("SELECT password_hash FROM users WHERE username=%s LIMIT 1", params=(username,), fetch=True)
+    if not rows:
+        return False
+    stored = rows[0].get("password_hash")
+    return stored == hash_password(raw_password)
 
 def login_user():
-    """
-    Formulario de login minimalista. Guarda en st.session_state:
-     - logged_in: bool
-     - user: dict (username, role, ...)
-    No usa st.experimental_rerun() para evitar errores en entornos donde no exista.
-    """
-    if "logged_in" not in st.session_state:
-        st.session_state.logged_in = False
-    if "user" not in st.session_state:
-        st.session_state.user = {}
-
     st.sidebar.header("Iniciar sesión")
-    with st.sidebar.form("login_form", clear_on_submit=False):
-        username = st.text_input("Usuario")
-        password = st.text_input("Contraseña", type="password")
-        submitted = st.form_submit_button("Iniciar sesión")
-        if submitted:
-            user = authenticate(username, password)
-            if user:
-                st.session_state.logged_in = True
-                st.session_state.user = user
-                st.success(f"Bienvenido, {user['username']} ✅")
-            else:
-                st.error("Usuario/contraseña incorrectos. (contraseña de ejemplo: 'secret')")
-
-    # Si ya está logueado, mostrar info compacta:
-    if st.session_state.logged_in:
-        user = st.session_state.get("user", {})
-        st.sidebar.markdown(f"**Conectado como:** {user.get('username','-')}")
+    if "user" in st.session_state:
+        st.sidebar.markdown(f"Conectado como: **{st.session_state['user']}**")
         if st.sidebar.button("Cerrar sesión"):
-            st.session_state.logged_in = False
-            st.session_state.user = {}
+            for k in ["user", "permissions", "role_id"]:
+                if k in st.session_state:
+                    del st.session_state[k]
+            st.experimental_rerun()
+        return
+
+    username = st.sidebar.text_input("Usuario")
+    password = st.sidebar.text_input("Contraseña", type="password")
+    if st.sidebar.button("Iniciar sesión"):
+        # aquí puedes validar con password real
+        if verify_password(username, password):
+            st.session_state["user"] = username
+            role_id = get_user_role_id(username)
+            st.session_state["role_id"] = role_id
+            st.session_state["permissions"] = load_permissions_for_role(role_id)
+            st.sidebar.success(f"Bienvenido, {username}")
+            st.experimental_rerun()
+        else:
+            st.sidebar.error("Usuario o contraseña incorrectos.")
