@@ -14,7 +14,6 @@ def _get_mysql_config():
     port = 3306
     """
     cfg = st.secrets.get("mysql", {})
-    # fallback: si no hay port, usar 3306
     cfg.setdefault("port", 3306)
     return cfg
 
@@ -31,11 +30,12 @@ def get_connection():
         )
         return conn
     except mysql.connector.Error as err:
-        # Mostrar error en streamlit de forma amigable
-        if st._is_running_with_streamlit:
+        # Mostrar error de forma segura en Streamlit (sin usar atributos privados)
+        try:
             st.error(f"Error de conexión a la BD: {err}")
-        else:
-            print(f"DB error: {err}")
+        except Exception:
+            # En caso raro de no poder usar st.error, imprimirlo por consola
+            print(f"Error de conexión a la BD: {err}")
         return None
 
 def get_table_names():
@@ -46,20 +46,20 @@ def get_table_names():
         cur = conn.cursor(dictionary=True)
         cur.execute("SHOW TABLES")
         rows = cur.fetchall()
-        # dependiendo del nombre de la columna (varía por MySQL)
-        tables = []
+        tablas = []
         for r in rows:
-            # r puede ser dict o tuple
             if isinstance(r, dict):
-                tables.append(list(r.values())[0])
+                tablas.append(list(r.values())[0])
             elif isinstance(r, (list, tuple)):
-                tables.append(r[0])
+                tablas.append(r[0])
             else:
-                tables.append(str(r))
+                tablas.append(str(r))
         cur.close()
         conn.close()
-        return tables
+        return tablas
     except Exception as e:
-        if st._is_running_with_streamlit:
+        try:
             st.error(f"Error al listar tablas: {e}")
+        except Exception:
+            print(f"Error al listar tablas: {e}")
         return []
