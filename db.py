@@ -1,44 +1,63 @@
+# db.py
+import os
 import streamlit as st
 import mysql.connector
 from mysql.connector import Error
-import os
-
-def get_db_config():
-    try:
-        s = st.secrets["db"]
-        return {
-            "host": s.get("host"),
-            "user": s.get("user"),
-            "password": s.get("password"),
-            "database": s.get("database"),
-            "port": int(s.get("port", 3306))
-        }
-    except Exception:
-        return {
-            "host": os.getenv("DB_HOST"),
-            "user": os.getenv("DB_USER"),
-            "password": os.getenv("DB_PASS"),
-            "database": os.getenv("DB_NAME"),
-            "port": int(os.getenv("DB_PORT", 3306))
-        }
 
 def get_connection():
-    cfg = get_db_config()
-    if not cfg["host"] or not cfg["user"]:
-        st.error("st.secrets['db'] no configurado o variables de entorno faltantes.")
+    """
+    Conecta usando Streamlit secrets si está en Cloud,
+    o variables de entorno, o defaults locales.
+    """
+    # Intentar secrets (Streamlit Cloud)
+    host = os.getenv("DB_HOST") or (st.secrets["db"]["host"] if "db" in st.secrets else None)
+    user = os.getenv("DB_USER") or (st.secrets["db"]["user"] if "db" in st.secrets else None)
+    password = os.getenv("DB_PASS") or (st.secrets["db"]["password"] if "db" in st.secrets else None)
+    database = os.getenv("DB_NAME") or (st.secrets["db"]["database"] if "db" in st.secrets else None)
+    port = os.getenv("DB_PORT") or (st.secrets["db"].get("port") if "db" in st.secrets else 3306)
+
+    if not host or not user or not database:
+        st.error("DB no configurada. Revisa secrets o variables de entorno.")
         return None
+
     try:
         conn = mysql.connector.connect(
-            host=cfg["host"],
-            user=cfg["user"],
-            password=cfg["password"],
-            database=cfg["database"],
-            port=cfg["port"],
-            connection_timeout=10
+            host=host,
+            user=user,
+            password=password,
+            database=database,
+            port=int(port)
         )
         return conn
     except Error as e:
         st.error(f"Error de conexión a la BD: {e}")
+        return None
+
+def run_query(query, params=None, fetch=True):
+    """
+    Ejecuta una consulta SQL segura usando placeholders.
+    - query: SQL con %s placeholders
+    - params: tuple/list de parámetros
+    - fetch: True -> devuelve filas (list of dicts), False -> ejecuta y commitea
+    """
+    conn = get_connection()
+    if not conn:
+        return None
+
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(query, params or ())
+        if fetch:
+            result = cursor.fetchall()
+        else:
+            conn.commit()
+            result = True
+        cursor.close()
+        conn.close()
+        return result
+    except Exception as e:
+        # en Cloud los errores se muestran en logs; aquí mostramos algo en UI
+        st.error(f"Error en run_query(): {e}")
         return None
 
 def test_connection():
@@ -46,47 +65,20 @@ def test_connection():
     if not conn:
         return False
     try:
-        cur = conn.cursor()
-        cur.execute("SELECT 1")
-        cur.close()
         conn.close()
         return True
-    except Exception as e:
-        st.error(f"Error probando BD: {e}")
+    except:
         return False
 
 def get_table_names():
-    conn = get_connection()
-    if not conn:
-        return None
-    try:
-        cur = conn.cursor()
-        cur.execute("SHOW TABLES;")
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        return [r[0] for r in rows]
-    except Exception as e:
-        st.error(f"Error listando tablas: {e}")
-        return None
-
-def run_query(query, params=None, fetch=True):
-    conn = get_connection()
-    if not conn:
-        return None
-    try:
-        cur = conn.cursor(dictionary=True)
-        cur.execute(query, params or ())
-        if fetch:
-            rows = cur.fetchall()
-            cur.close()
-            conn.close()
-            return rows
-        else:
-            conn.commit()
-            cur.close()
-            conn.close()
-            return True
-    except Exception as e:
-        st.error(f"Error en run_query(): {e}")
-        return None
+    rows = run_query("SHOW TABLES", fetch=True)
+    if not rows:
+        return []
+    # mysql returns list of dicts with varying key name: get the first value of each row
+    names = []
+    for r in rows:
+        if isinstance(r, dict):
+            vals = list(r.values())
+            if vals:
+                names.append(vals[0])
+    return names
