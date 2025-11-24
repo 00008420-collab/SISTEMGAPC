@@ -1,6 +1,2 @@
-streamlit==1.26.0
-SQLAlchemy==2.0.19
-pymysql==1.1.0
-pandas==2.2.2
-python-dotenv==1.0.0
-mysql-connector-python==8.1.0
+streamlit
+mysql-connector-python
