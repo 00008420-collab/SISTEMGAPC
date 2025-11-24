@@ -1,4 +1,4 @@
 # auth/__init__.py
-from .login import show_login_streamlit, logout
-
-__all__ = ["show_login_streamlit", "logout"]
+# Este archivo puede quedarse vacío, pero se recomienda definir la versión o
+# exponer funciones si lo deseas.
+__all__ = ["login", "config"]
