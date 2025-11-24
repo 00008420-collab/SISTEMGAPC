@@ -1,47 +1,52 @@
-# auth/login.py
 import streamlit as st
 from db import run_query
 import hashlib
 
-def hash_sha256(pw: str):
-    return hashlib.sha256(pw.encode("utf-8")).hexdigest()
+# Hash con SHA256
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
 
-def fetch_user_by_username(username):
-    rows = run_query("SELECT * FROM users WHERE username = %s LIMIT 1;", (username,), fetch=True)
-    if rows:
-        return rows[0]
-    return None
-
-def check_credentials(username, password):
-    user = fetch_user_by_username(username)
-    if not user:
-        return None
-    # tu columna password_hash debe contener el hex de sha256
-    provided = hash_sha256(password)
-    if provided == user.get("password_hash") or provided == user.get("password"):
-        # some DBs store in 'password' o 'password_hash'
-        return user
-    return None
+# -------------------------
+#   LOGIN BOX
+# -------------------------
 
 def login_box():
-    st.subheader("Iniciar sesión")
-    with st.form(key="login_form"):
-        username = st.text_input("Usuario", key="login_username")
-        password = st.text_input("Contraseña", type="password", key="login_password")
-        submit = st.form_submit_button("Iniciar sesión")
-    if submit:
-        user = check_credentials(username.strip(), password)
+    st.markdown("<h2 style='text-align:center;'>Iniciar sesión</h2>", unsafe_allow_html=True)
+
+    # 🟢 USAR KEYS ÚNICOS BASADOS EN SESSION_STATE
+    if "login_username" not in st.session_state:
+        st.session_state.login_username = ""
+    if "login_password" not in st.session_state:
+        st.session_state.login_password = ""
+
+    username = st.text_input("Usuario", key="login_username_input")
+    password = st.text_input("Contraseña", type="password", key="login_password_input")
+
+    if st.button("Ingresar", key="login_button"):
+        pw_hash = hash_password(password)
+        user = run_query(
+            "SELECT * FROM users WHERE username=%s AND password_hash=%s LIMIT 1",
+            (username, pw_hash)
+        )
+
         if user:
-            st.session_state["user"] = user
-            st.success("Autenticado (SHA2)")  # mensaje corto
+            st.session_state.user = user[0]
+            st.session_state.authenticated = True
             st.experimental_rerun()
         else:
-            st.error("Usuario o contraseña inválida")
+            st.error("Usuario o contraseña incorrectos")
+
+
+# -------------------------
+#   REQUIRE LOGIN
+# -------------------------
 
 def require_login():
-    """Si hay user en session_state la retorna; si no, muestra login y detiene ejecución."""
-    if "user" in st.session_state:
-        return st.session_state["user"]
-    else:
+    # Si no está autenticado, mostrar login
+    if "authenticated" not in st.session_state or not st.session_state.authenticated:
         login_box()
+
+        # ⚠️ detener la ejecución del resto de app.py
         st.stop()
+
+    return st.session_state.user
