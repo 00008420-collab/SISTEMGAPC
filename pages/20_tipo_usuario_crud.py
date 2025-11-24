@@ -8,40 +8,66 @@ ID_COL = "id_tipo_usuario"
 st.title("Tipo de usuario — CRUD")
 
 def list_tipos(limit=200):
-    conn = get_connection()
-    if not conn:
-        return []
+    conn=get_connection()
+    if not conn: return None
     try:
-        with conn.cursor() as cur:
-            cur.execute(f"SELECT * FROM `{TABLE}` LIMIT %s", (limit,))
-            return cur.fetchall()
+        cur=conn.cursor(dictionary=True); cur.execute(f"SELECT * FROM `{TABLE}` LIMIT %s",(limit,))
+        rows=cur.fetchall(); cur.close(); return rows
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        conn.close()
 
-def create_tipo(nombre, apellido, rol):
-    conn = get_connection()
-    if not conn:
-        return False, "no conn"
+def create_tipo(nombre,apellido,rol):
+    conn=get_connection()
+    if not conn: return False
     try:
-        with conn.cursor() as cur:
-            cur.execute(f"INSERT INTO `{TABLE}` (`nombre`,`apellido`,`rol`) VALUES (%s,%s,%s)", (nombre, apellido, rol))
-            conn.commit()
-            return True, "Creado"
+        cur=conn.cursor()
+        cur.execute(f"INSERT INTO `{TABLE}` (nombre,apellido,rol) VALUES (%s,%s,%s)",
+                    (nombre,apellido,rol))
+        conn.commit(); cur.close(); return True
     except Exception as e:
-        return False, str(e)
+        st.error(e); return False
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        conn.close()
 
+def get_by_id(pk):
+    conn=get_connection()
+    if not conn: return None
+    try:
+        cur=conn.cursor(dictionary=True); cur.execute(f"SELECT * FROM `{TABLE}` WHERE `{ID_COL}`=%s",(pk,))
+        r=cur.fetchone(); cur.close(); return r
+    finally:
+        conn.close()
+
+def update_tipo(pk,nombre,apellido,rol):
+    conn=get_connection()
+    if not conn: return False
+    try:
+        cur=conn.cursor()
+        cur.execute(f"UPDATE `{TABLE}` SET nombre=%s,apellido=%s,rol=%s WHERE `{ID_COL}`=%s",
+                    (nombre,apellido,rol,pk))
+        conn.commit(); cur.close(); return True
+    except Exception as e:
+        st.error(e); return False
+    finally:
+        conn.close()
+
+def delete_tipo(pk):
+    conn=get_connection()
+    if not conn: return False
+    try:
+        cur=conn.cursor(); cur.execute(f"DELETE FROM `{TABLE}` WHERE `{ID_COL}`=%s",(pk,))
+        conn.commit(); cur.close(); return True
+    except Exception as e:
+        st.error(e); return False
+    finally:
+        conn.close()
+
+# UI
 with st.expander("Listar tipos de usuario"):
-    limit = st.number_input("Límite", value=200, min_value=10)
     if st.button("Cargar tipos"):
-        st.dataframe(list_tipos(limit))
+        rows=list_tipos()
+        if rows is None: st.error("No conexión")
+        else: st.dataframe(rows)
 
 st.markdown("---")
 st.subheader("Crear tipo de usuario")
@@ -50,35 +76,17 @@ with st.form("create_tipo"):
     apellido = st.text_input("apellido")
     rol = st.text_input("rol")
     if st.form_submit_button("Crear"):
-        ok, msg = create_tipo(nombre, apellido, rol)
-        if ok:
-            st.success(msg)
-        else:
-            st.error(msg)
+        ok = create_tipo(nombre,apellido,rol)
+        st.success("Creado" if ok else "Error al crear")
 
 st.markdown("---")
-st.subheader("Buscar / Editar / Eliminar por id_tipo_usuario")
-buscar = st.text_input("id_tipo_usuario")
-if st.button("Cargar"):
-    if not buscar:
-        st.warning("Ingresa id")
+st.subheader("Buscar / Editar / Eliminar")
+pk=st.text_input(ID_COL)
+if st.button("Cargar tipo"):
+    if not pk: st.warning("Ingresa id")
     else:
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(f"SELECT * FROM `{TABLE}` WHERE `{ID_COL}`=%s", (buscar,))
-                rec = cur.fetchone()
-        except Exception as e:
-            st.error(f"Error al consultar: {e}")
-            rec = None
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-        if not rec:
-            st.info("No encontrado")
+        rec=get_by_id(pk)
+        if not rec: st.info("No encontrado")
         else:
             st.json(rec)
             with st.form("update_tipo"):
@@ -86,34 +94,8 @@ if st.button("Cargar"):
                 apellido = st.text_input("apellido", value=str(rec.get("apellido") or ""))
                 rol = st.text_input("rol", value=str(rec.get("rol") or ""))
                 if st.form_submit_button("Actualizar"):
-                    try:
-                        conn2 = get_connection()
-                        with conn2.cursor() as cur2:
-                            cur2.execute(
-                                f"UPDATE `{TABLE}` SET `nombre`=%s,`apellido`=%s,`rol`=%s WHERE `{ID_COL}`=%s",
-                                (nombre, apellido, rol, buscar),
-                            )
-                            conn2.commit()
-                        st.success("Actualizado")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
-                    finally:
-                        try:
-                            conn2.close()
-                        except Exception:
-                            pass
-
+                    ok = update_tipo(pk,nombre,apellido,rol)
+                    st.success("Actualizado" if ok else "Error al actualizar")
             if st.button("Eliminar"):
-                try:
-                    conn3 = get_connection()
-                    with conn3.cursor() as cur3:
-                        cur3.execute(f"DELETE FROM `{TABLE}` WHERE `{ID_COL}`=%s", (buscar,))
-                        conn3.commit()
-                    st.success("Eliminado")
-                except Exception as e:
-                    st.error(f"Error: {e}")
-                finally:
-                    try:
-                        conn3.close()
-                    except Exception:
-                        pass
+                ok = delete_tipo(pk)
+                st.success("Eliminado" if ok else "Error al eliminar")
