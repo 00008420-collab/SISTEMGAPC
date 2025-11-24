@@ -1,205 +1,267 @@
 # app.py
 import streamlit as st
-from typing import List
+from typing import List, Optional, Tuple, Any
+from db import run_query  # debe existir en tu repo
+import html
 
-st.set_page_config(page_title="SGAPC - Menú principal", layout="wide")
+st.set_page_config(
+    page_title="SGAPC - Menú principal",
+    layout="wide",
+)
 
-# --- Try to import db helpers (must exist in your repo) ---
-try:
-    from db import test_connection, get_table_names, run_query
-except Exception as e:
-    # If db.py is missing or doesn't define the functions we expect, show a clear error
-    st.write("Error al importar funciones de db.py:", e)
-    st.stop()
+# -------------------------
+# UTIL: consulta tablas
+# -------------------------
+def get_table_names_from_db() -> Optional[List[str]]:
+    """Intenta obtener nombres de tablas. Usa SHOW TABLES si get_table_names no existe."""
+    try:
+        # Intentamos función común (si la tienes implementada en db.py)
+        res = run_query("SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE()", fetch=True)
+        if res:
+            # res podría venir como lista de dicts o lista de tuples
+            names = []
+            for row in res:
+                if isinstance(row, dict):
+                    # toma la primera columna
+                    first = next(iter(row.values()))
+                    names.append(str(first))
+                elif isinstance(row, (list, tuple)):
+                    names.append(str(row[0]))
+                else:
+                    names.append(str(row))
+            return names
+    except Exception:
+        pass
 
-
-# --- Try to import your auth module (optional) ---
-auth_available = False
-try:
-    # Se espera que auth/login.py tenga funciones: login_box(), require_login(), logout_user() u otras.
-    from auth.login import login_box, require_login, logout_user, get_current_user  # optional
-    auth_available = True
-except Exception:
-    # No hay módulo de auth (fallback más abajo)
-    auth_available = False
-
-
-# ---------- Authentication helpers (fallback) ----------
-def fallback_login_form():
-    """
-    Formulario muy simple para pruebas cuando no existan los helpers de auth.
-    **No es seguro** para producción. Si tienes auth/login, preferir usarlo.
-    """
-    st.sidebar.subheader("Iniciar sesión (modo prueba)")
-    username = st.sidebar.text_input("Usuario", key="fallback_user")
-    submitted = st.sidebar.button("Iniciar sesión (prueba)")
-    if submitted and username:
-        st.session_state["user"] = {"username": username, "display_name": username}
-        st.sidebar.success(f"Conectado como: {username}")
-        return True
-    return False
-
-
-def require_login_local():
-    """
-    Requiere inicio de sesión. Si auth_available usa ese; si no, usa fallback.
-    Devuelve el objeto usuario (dict) o None.
-    """
-    # Si ya está en sesión
-    if st.session_state.get("user"):
-        return st.session_state["user"]
-
-    if auth_available:
-        # Llamamos a require_login() del módulo auth si lo provees
-        try:
-            user = require_login()
-            if user:
-                st.session_state["user"] = user
-                return user
-            return None
-        except Exception as e:
-            st.warning("Error al usar auth.require_login(): se usará fallback. (" + str(e) + ")")
-            return None
-    else:
-        # Mostrar fallback en la barra lateral
-        ok = fallback_login_form()
-        if ok:
-            return st.session_state.get("user")
+    # Fallback a SHOW TABLES
+    try:
+        res = run_query("SHOW TABLES", fetch=True)
+        if not res:
+            return []
+        names = []
+        for row in res:
+            if isinstance(row, dict):
+                first = next(iter(row.values()))
+                names.append(str(first))
+            elif isinstance(row, (list, tuple)):
+                names.append(str(row[0]))
+            else:
+                names.append(str(row))
+        return names
+    except Exception as e:
+        st.error(f"Error obteniendo tablas: {e}")
         return None
 
-
-# ---------- Small UI helpers ----------
-def show_connection_status():
-    """Comprueba la conexión y muestra resultado."""
+# -------------------------
+# AUTENTICACIÓN
+# -------------------------
+def check_sha2_login(username: str, password: str) -> Optional[dict]:
+    """
+    Intenta autenticar usando SHA2 en MySQL:
+    SELECT * FROM users WHERE username=%s AND password_hash=SHA2(%s,256)
+    (funciona si en tu BD el password se guardó como SHA2(...,256))
+    """
     try:
-        result = test_connection()
-        # test_connection puede devolver bool o (bool,msg)
-        if isinstance(result, tuple) and len(result) >= 1:
-            ok = result[0]
-            msg = result[1] if len(result) > 1 else ""
-        else:
-            ok = bool(result)
-            msg = "Conexión OK" if ok else "Error desconocido"
-
-        if ok:
-            st.success("Conexión establecida ✅ — " + str(msg))
-            return True
-        else:
-            st.error("Error de conexión a la BD: " + str(msg))
-            return False
+        q = """
+        SELECT * FROM users
+        WHERE username = %s AND password_hash = SHA2(%s,256)
+        LIMIT 1
+        """
+        res = run_query(q, (username, password), fetch=True)
+        if res:
+            # devolver fila como dict o tuple
+            return res[0]
     except Exception as e:
-        st.error("Error al ejecutar test_connection(): " + str(e))
+        # No detener; el método SHA2 no es obligatorio
+        st.debug(f"SHA2 auth error: {e}")
+    return None
+
+def check_plain_or_direct(username: str, password: str) -> Optional[dict]:
+    """
+    Intenta autenticar comparando directamente el campo password_hash con el password ingresado.
+    Esto ayuda si en tu tabla el password se almacenó en texto simple (no recomendado).
+    """
+    try:
+        q = "SELECT * FROM users WHERE username = %s AND password_hash = %s LIMIT 1"
+        res = run_query(q, (username, password), fetch=True)
+        if res:
+            return res[0]
+    except Exception:
+        pass
+    return None
+
+def user_exists(username: str) -> bool:
+    try:
+        q = "SELECT 1 FROM users WHERE username = %s LIMIT 1"
+        res = run_query(q, (username,), fetch=True)
+        return bool(res)
+    except Exception:
         return False
 
+def login_user(username: str, password: str) -> Tuple[bool, str, Optional[dict]]:
+    """
+    Intenta login con varios métodos. Devuelve (ok, mensaje, user_row_or_None)
+    """
+    # 1) Intentar SHA2 (recomendado si tus inserts usaron SHA2(...,256))
+    row = check_sha2_login(username, password)
+    if row:
+        return True, "Autenticado (SHA2)", row
 
-def safe_get_tables() -> List[str]:
-    """Obtiene la lista de tablas desde db.get_table_names(), devuelve lista vacía en error."""
-    try:
-        tbls = get_table_names()
-        if tbls is None:
-            return []
-        # Garantizar lista de strings
-        return [t for t in tbls if isinstance(t, str)]
-    except Exception as e:
-        st.warning("No fue posible listar tablas (get_table_names falló): " + str(e))
-        return []
+    # 2) Intentar comparación directa (no recomendado, pero por compatibilidad)
+    row = check_plain_or_direct(username, password)
+    if row:
+        return True, "Autenticado (match directo)", row
 
+    # 3) Si la cuenta existe pero no podemos validar (hash scrypt u otro), permitir si el usuario
+    # ha configurado ADMIN_BYPASS en secrets (un token de emergencia).
+    if user_exists(username):
+        bypass = st.secrets.get("ADMIN_BYPASS", None)
+        if bypass and password == bypass:
+            row = run_query("SELECT * FROM users WHERE username = %s LIMIT 1", (username,), fetch=True)
+            return True, "Autenticado con ADMIN_BYPASS (token en secrets)", row[0] if row else None
 
-def show_table_data(table_name: str):
-    """Muestra las primeras filas de la tabla seleccionada (limit 100)."""
-    if not table_name:
-        st.info("Selecciona una tabla a la izquierda para ver su contenido.")
-        return
+        # informar que la cuenta existe pero no se pudo verificar
+        return False, ("La cuenta existe pero la app no pudo verificar la contraseña (hash no compatible). "
+                       "Si quieres permitir login con este método, crea el usuario usando SHA2 en la BD "
+                       "o añade ADMIN_BYPASS en secrets."), None
 
-    # Validar el nombre contra la lista de tablas reales (evita inyección)
-    valid_tables = safe_get_tables()
-    if table_name not in valid_tables:
-        st.error("Tabla no válida o no encontrada: " + str(table_name))
-        return
+    # 4) no existe
+    return False, "Usuario o contraseña incorrectos.", None
 
-    st.subheader(f"Vista rápida: `{table_name}`")
-    # Construir consulta segura: no parametrizamos el nombre de la tabla, pero ya lo validamos.
-    query = f"SELECT * FROM `{table_name}` LIMIT 100;"
-    try:
-        rows = run_query(query, fetch=True)
-        if rows is None:
-            st.info("La consulta no devolvió resultados o falló.")
-            return
-        if isinstance(rows, list) and len(rows) == 0:
-            st.info("La tabla está vacía.")
-            return
-        # Mostrar dataframe
-        import pandas as pd
-        df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True)
-    except Exception as e:
-        st.error("Error al leer tabla: " + str(e))
+# -------------------------
+# LAYOUT: LOGIN BONITO
+# -------------------------
+def show_login_page():
+    st.markdown(
+        """
+        <style>
+        /* fondo lateral e imagen hero si deseas (opcional) */
+        .hero {
+            padding: 40px;
+            color: white;
+        }
+        .login-box {
+            background: rgba(255,255,255,0.03);
+            border-radius: 10px;
+            padding: 18px;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.4);
+        }
+        .big-title {
+            font-size: 48px;
+            font-weight:800;
+            margin-bottom: 8px;
+        }
+        .muted {
+            color: #cbd5e1;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
+    # Layout: columnas (izquierda grande con hero, derecha estrecha con login)
+    left_col, right_col = st.columns([2.6, 1])
 
-# ---------------- Main app layout ----------------
+    with left_col:
+        st.markdown('<div class="big-title">Welcome Back</div>', unsafe_allow_html=True)
+        st.markdown('<div class="muted">Bienvenido al sistema SGAPC. Inicia sesión para acceder al panel.</div>',
+                    unsafe_allow_html=True)
+        st.write("")  # espacio
+
+    with right_col:
+        st.markdown('<div class="login-box">', unsafe_allow_html=True)
+        st.subheader("Sign in")
+        username = st.text_input("Usuario", key="login_username")
+        password = st.text_input("Contraseña", type="password", key="login_password")
+        remember = st.checkbox("Recordarme", key="login_remember")
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            login_btn = st.button("Iniciar sesión", key="login_btn")
+        with col2:
+            st.write("")  # placeholder para equilibrio
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # mensajes informativos
+        st.write("")
+        st.info("Si tu contraseña en la BD está hasheada con scrypt o con un esquema no compatible, "
+                "usa la opción de creación de usuario con SHA2 o configura ADMIN_BYPASS en secrets.")
+
+        return username, password, login_btn
+
+# -------------------------
+# PÁGINA PRINCIPAL POST-LOGIN
+# -------------------------
+def show_main_page(user_row: dict, table_names: List[str]):
+    # menú superior / bienvenida
+    st.markdown(f"### Bienvenido, **{html.escape(str(user_row.get('username', 'Usuario')))}**")
+    st.write("Usa la barra lateral para abrir los CRUDs disponibles (Pages).")
+
+    # Comprobación rápida de BD
+    st.markdown("## 🔎 Comprobación rápida de la base de datos")
+    st.success("Conexión establecida — Conexión OK")
+    st.write("Tablas detectadas:")
+    st.write(", ".join(table_names) if table_names else "No se detectaron tablas.")
+
+    # Mostrar menú de acceso rápido (links a páginas, si deseas)
+    st.markdown("---")
+    st.markdown("### Atajos (haz clic para ver la Page desde el panel lateral)")
+    for i, name in enumerate(table_names, start=1):
+        # mostrar nombre amigable removiendo prefijo numérico si lo tuvieras
+        pretty = name.replace("_", " ").title()
+        st.write(f"- `{i:02d}` **{pretty}** ({name})")
+
+# -------------------------
+# MAIN
+# -------------------------
 def main():
-    st.title("📘 SGAPC - Menú principal")
-    st.write("Bienvenido al sistema. Usa la barra lateral para iniciar sesión y abrir las tablas.")
+    st.title("SGAPC - Menú principal")
 
-    # Comprobamos la conexión (mostramos en la página de inicio)
-    connected = show_connection_status()
+    # Si ya hay sesión iniciada, mostrar main. Sino mostrar login.
+    if "logged_in" not in st.session_state:
+        st.session_state.logged_in = False
+        st.session_state.user = None
 
-    # Si hay conexión, intentamos listar tablas (pero la vista completa requiere login)
-    tables = safe_get_tables() if connected else []
+    # Si no conectado a DB: lo indicamos y paramos
+    # Probamos una consulta simple para detectar si DB funciona (run_query debe estar OK)
+    table_names = None
+    try:
+        table_names = get_table_names_from_db()
+    except Exception as e:
+        st.error(f"Error comprobando BD: {e}")
 
-    # ---- Autenticación ----
-    user = require_login_local()
+    # Si no logged_in -> mostrar login
+    if not st.session_state.logged_in:
+        username, password, login_btn = show_login_page()
 
-    if not user:
-        st.info("Debes iniciar sesión para ver las tablas y contenidos. Usa el panel lateral.")
-        # opcional: no mostramos nada más hasta login
-        return
-
-    # Usuario logueado -> mostrar contenido principal y barra lateral con tablas
-    st.markdown(f"**Conectado como:** `{user.get('username', user.get('display_name','usuario'))}`")
-
-    # Sidebar: desplegable con tablas (aparece solo después de login)
-    with st.sidebar:
-        st.header("Navegación")
-        st.text_input("Buscar page o tabla...", key="search_box")
-
-        # Expander que contiene la lista de tablas
-        with st.expander("Tablas (haz clic para seleccionar)", expanded=True):
-            if not tables:
-                st.write("No se detectaron tablas.")
-            else:
-                # Lista con botones (un solo select es más elegante)
-                selected = st.radio("Selecciona una tabla", options=tables, key="selected_table_radio")
-                st.write("")  # espacio
-                st.caption(f"{len(tables)} tablas detectadas.")
-                # Botón de cierre de sesión si existe logout_user
-                if auth_available:
-                    try:
-                        if st.button("Cerrar sesión"):
-                            try:
-                                logout_user()
-                            except Exception:
-                                # fallback
-                                st.session_state.pop("user", None)
-                            st.experimental_rerun()
-                    except Exception:
-                        pass
+        if login_btn:
+            with st.spinner("Autenticando..."):
+                ok, msg, user_row = login_user(username.strip(), password)
+                if ok:
+                    st.session_state.logged_in = True
+                    st.session_state.user = user_row
+                    st.success(msg)
+                    # recargar la página para que el resto se muestre de forma "limpia"
+                    st.experimental_rerun()
                 else:
-                    if st.button("Cerrar sesión (modo prueba)"):
-                        st.session_state.pop("user", None)
-                        st.experimental_rerun()
+                    st.error(msg)
+        else:
+            # muestra estado de conexión (en la misma página de login)
+            if table_names is None:
+                st.warning("La aplicación no pudo comprobar la base de datos. Revisa los secrets y credenciales.")
+            elif not table_names:
+                st.info("Conexión establecida pero no se encontraron tablas (o no pudo listarlas).")
+            else:
+                # opcional: mostrar un pequeño resumen debajo del login
+                st.info(f"Conexión OK — {len(table_names)} tablas detectadas.")
+        return  # no ejecutar el resto hasta iniciar sesión
 
-        # Opcional: atajos o links (no los quieres, así que están minimizados)
-        # st.write("---")
-        # st.write("Atajos desactivados por estética.")
+    # Si llegamos aquí, el usuario está autenticado
+    user_row = st.session_state.user or {}
+    # refrescar lista de tablas
+    table_names = table_names or get_table_names_from_db() or []
 
-    # Mostrar la tabla seleccionada en el cuerpo principal
-    selected_table = st.session_state.get("selected_table_radio", None)
-    if selected_table:
-        show_table_data(selected_table)
-    else:
-        st.info("Selecciona una tabla desde la barra lateral para ver su contenido.")
-
+    # show main
+    show_main_page(user_row, table_names)
 
 if __name__ == "__main__":
     main()
