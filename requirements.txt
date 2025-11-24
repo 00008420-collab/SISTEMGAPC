@@ -1,2 +1,6 @@
 streamlit
 mysql-connector-python
+pandas
+pymysql
+SQLAlchemy
+python-dotenv
