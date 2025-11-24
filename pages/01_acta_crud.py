@@ -1,141 +1,81 @@
 # pages/01_acta_crud.py
 import streamlit as st
-from db import get_connection
+from db import run_query
+from auth_helpers import has_permission, log_action, get_current_user
 
 TABLE = "acta"
-ID_COL = "id_acta"
+PK = "id_acta"
+FIELDS = ["id_ciclo", "tipo", "fecha", "descripcion"]
+PERM_CREATE = "crear_acta"
+PERM_VIEW = "ver_acta"
+PERM_UPDATE = "editar_acta"
+PERM_DELETE = "borrar_acta"
 
-st.title("Acta — CRUD")
+def app():
+    st.title("Actas")
 
-def list_actas(limit=200):
-    conn = get_connection()
-    if not conn:
-        return None
-    try:
-        cur = conn.cursor(dictionary=True)
-        cur.execute(f"SELECT * FROM `{TABLE}` LIMIT %s", (limit,))
-        rows = cur.fetchall()
-        cur.close()
-        return rows
-    finally:
-        conn.close()
+    usuario = get_current_user()
 
-def create_acta(id_ciclo, tipo, fecha, descripcion):
-    conn = get_connection()
-    if not conn:
-        return False
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"INSERT INTO `{TABLE}` (id_ciclo,tipo,fecha,descripcion) VALUES (%s,%s,%s,%s)",
-            (id_ciclo, tipo, fecha, descripcion),
-        )
-        conn.commit()
-        cur.close()
-        return True
-    except Exception as e:
-        st.error(e)
-        return False
-    finally:
-        conn.close()
-
-def get_by_id(pk):
-    conn = get_connection()
-    if not conn:
-        return None
-    try:
-        cur = conn.cursor(dictionary=True)
-        cur.execute(f"SELECT * FROM `{TABLE}` WHERE `{ID_COL}`=%s", (pk,))
-        r = cur.fetchone()
-        cur.close()
-        return r
-    finally:
-        conn.close()
-
-def update_acta(pk, id_ciclo, tipo, fecha, descripcion):
-    conn = get_connection()
-    if not conn:
-        return False
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"UPDATE `{TABLE}` SET id_ciclo=%s,tipo=%s,fecha=%s,descripcion=%s WHERE `{ID_COL}`=%s",
-            (id_ciclo, tipo, fecha, descripcion, pk),
-        )
-        conn.commit()
-        cur.close()
-        return True
-    except Exception as e:
-        st.error(e)
-        return False
-    finally:
-        conn.close()
-
-def delete_acta(pk):
-    conn = get_connection()
-    if not conn:
-        return False
-    try:
-        cur = conn.cursor()
-        cur.execute(f"DELETE FROM `{TABLE}` WHERE `{ID_COL}`=%s", (pk,))
-        conn.commit()
-        cur.close()
-        return True
-    except Exception as e:
-        st.error(e)
-        return False
-    finally:
-        conn.close()
-
-# UI
-with st.expander("Listar actas"):
-    limit = st.number_input("Límite", value=200, min_value=1)
-    if st.button("Cargar actas"):
-        rows = list_actas(limit)
-        if rows is None:
-            st.error("No hay conexión")
-        else:
-            st.dataframe(rows)
-
-st.markdown("---")
-st.subheader("Crear acta")
-with st.form("create"):
-    id_ciclo = st.text_input("id_ciclo")
-    tipo = st.text_input("tipo")
-    fecha = st.date_input("fecha")
-    descripcion = st.text_area("descripcion")
-    if st.form_submit_button("Crear"):
-        ok = create_acta(id_ciclo, tipo, fecha.isoformat(), descripcion)
-        if ok:
-            st.success("Creado")
-        else:
-            st.error("Error al crear")
-
-st.markdown("---")
-st.subheader("Buscar / Editar / Eliminar")
-pk = st.text_input(ID_COL)
-if st.button("Cargar"):
-    if not pk:
-        st.warning("Ingresa id")
+    # LISTAR
+    if has_permission(PERM_VIEW):
+        rows = run_query(f"SELECT * FROM {TABLE} ORDER BY {PK} DESC LIMIT 500", fetch=True) or []
+        st.dataframe(rows)
     else:
-        rec = get_by_id(pk)
-        if not rec:
-            st.info("No encontrado")
-        else:
-            st.json(rec)
-            with st.form("update"):
-                id_ciclo = st.text_input("id_ciclo", value=str(rec.get("id_ciclo") or ""))
-                tipo = st.text_input("tipo", value=str(rec.get("tipo") or ""))
-                fecha_val = str(rec.get("fecha") or "")
-                descripcion = st.text_area("descripcion", value=str(rec.get("descripcion") or ""))
-                if st.form_submit_button("Actualizar"):
-                    ok = update_acta(pk, id_ciclo, tipo, fecha_val, descripcion)
-                    if ok:
-                        st.success("Actualizado")
-                    else:
-                        st.error("Error al actualizar")
-            if st.button("Eliminar"):
-                if delete_acta(pk):
-                    st.success("Eliminado")
+        st.warning("No tienes permiso para ver actas.")
+
+    st.markdown("---")
+
+    # CREAR
+    if has_permission(PERM_CREATE):
+        with st.form("crear_acta"):
+            id_ciclo = st.text_input("id_ciclo")
+            tipo = st.text_input("tipo")
+            fecha = st.date_input("fecha")
+            descripcion = st.text_area("descripcion")
+            if st.form_submit_button("Crear acta"):
+                q = f"INSERT INTO {TABLE} (id_ciclo, tipo, fecha, descripcion) VALUES (%s, %s, %s, %s)"
+                params = (id_ciclo, tipo, fecha.strftime("%Y-%m-%d"), descripcion)
+                ok = run_query(q, params=params, fetch=False)
+                if ok:
+                    st.success("Acta creada.")
+                    log_action(usuario, None, "create", TABLE, registro_id=None, detalle=str(params))
                 else:
-                    st.error("Error al eliminar")
+                    st.error("Error creando acta.")
+    else:
+        st.info("No tienes permiso para crear actas.")
+
+    st.markdown("---")
+
+    # EDITAR / BORRAR
+    if has_permission(PERM_UPDATE) or has_permission(PERM_DELETE):
+        id_target = st.text_input("ID acta a editar/eliminar")
+        if st.button("Cargar acta"):
+            if id_target:
+                row = run_query(f"SELECT * FROM {TABLE} WHERE {PK}=%s LIMIT 1", params=(id_target,), fetch=True)
+                if row:
+                    row = row[0]
+                    new_tipo = st.text_input("tipo", value=row.get("tipo",""))
+                    new_fecha = st.date_input("fecha", value=row.get("fecha"))
+                    new_descripcion = st.text_area("descripcion", value=row.get("descripcion",""))
+                    if st.button("Guardar cambios"):
+                        q = f"UPDATE {TABLE} SET tipo=%s, fecha=%s, descripcion=%s WHERE {PK}=%s"
+                        params = (new_tipo, new_fecha.strftime("%Y-%m-%d"), new_descripcion, id_target)
+                        ok = run_query(q, params=params, fetch=False)
+                        if ok:
+                            st.success("Acta actualizada.")
+                            log_action(usuario, None, "update", TABLE, registro_id=id_target, detalle=str(params))
+                        else:
+                            st.error("Error actualizando.")
+                    if st.button("Eliminar acta"):
+                        ok = run_query(f"DELETE FROM {TABLE} WHERE {PK}=%s", params=(id_target,), fetch=False)
+                        if ok:
+                            st.success("Acta eliminada.")
+                            log_action(usuario, None, "delete", TABLE, registro_id=id_target, detalle=None)
+                        else:
+                            st.error("Error eliminando.")
+                else:
+                    st.error("Acta no encontrada.")
+            else:
+                st.warning("Introduce ID.")
+    else:
+        st.info("No tienes permiso para editar o eliminar actas.")
