@@ -1,131 +1,117 @@
 # db.py
-import os
 import streamlit as st
 import mysql.connector
 from mysql.connector import Error
 
-def get_db_config():
-    """
-    Lee la configuración de conexión desde st.secrets['db'] o variables de entorno.
-    En Streamlit Cloud: añade en Secrets (Settings -> Secrets) una sección 'db' con:
-    host, user, password, database, port (opcional)
-    Ejemplo (secrets.toml):
-    [db]
-    host = "mi-host"
-    user = "mi-usuario"
-    password = "mi-pass"
-    database = "mi_db"
-    port = 3306
-    """
-    # Intentar st.secrets['db']
-    try:
-        db_secret = st.secrets["db"]
-        host = db_secret.get("host")
-        user = db_secret.get("user")
-        password = db_secret.get("password")
-        database = db_secret.get("database")
-        port = int(db_secret.get("port", 3306))
-        return {"host": host, "user": user, "password": password, "database": database, "port": port}
-    except Exception:
-        # Intentar variables de entorno como fallback
-        host = os.getenv("DB_HOST")
-        user = os.getenv("DB_USER")
-        password = os.getenv("DB_PASSWORD")
-        database = os.getenv("DB_NAME")
-        port = int(os.getenv("DB_PORT", 3306))
-        return {"host": host, "user": user, "password": password, "database": database, "port": port}
-
 def get_connection():
-    cfg = get_db_config()
-    if not cfg["host"] or not cfg["user"] or not cfg["database"]:
+    """
+    Lee credenciales desde st.secrets['db'] y devuelve una conexión MySQL.
+    """
+    try:
+        cfg = st.secrets["db"]
+    except Exception as e:
+        st.error("st.secrets['db'] no está configurado. Añade tus credenciales en Secrets.")
         return None
+
     try:
         conn = mysql.connector.connect(
-            host=cfg["host"],
-            user=cfg["user"],
-            password=cfg["password"],
-            database=cfg["database"],
-            port=cfg["port"],
-            connection_timeout=10
+            host=cfg.get("host"),
+            user=cfg.get("user"),
+            password=cfg.get("password"),
+            database=cfg.get("database"),
+            port=int(cfg.get("port", 3306))
         )
         return conn
     except Error as e:
-        # no usar st.* aquí si quieres que la función sea utilizable fuera de streamlit
-        # pero devolvemos None y el error arriba si se necesita
+        st.error(f"Error conectando a la BD: {e}")
         return None
 
-def test_connection():
+def run_query(query: str, params: tuple = None, fetch: bool = True):
     """
-    Intenta conectarse y devuelve (True, mensaje) o (False, mensaje)
-    """
-    cfg = get_db_config()
-    if not cfg["host"] or not cfg["user"] or not cfg["database"]:
-        return False, "Falta configuración DB en secrets o variables de entorno."
-    try:
-        conn = mysql.connector.connect(
-            host=cfg["host"],
-            user=cfg["user"],
-            password=cfg["password"],
-            database=cfg["database"],
-            port=cfg["port"],
-            connection_timeout=8
-        )
-        if conn and conn.is_connected():
-            conn.close()
-            return True, "Conexión OK"
-        return False, "No se pudo establecer conexión"
-    except Error as e:
-        return False, f"Error conectando a la BD: {e}"
-
-def get_table_names(schema=None):
-    """
-    Devuelve lista de tablas en la base de datos (names en minúscula).
-    Si hay error devuelve [].
-    """
-    try:
-        conn = get_connection()
-        if not conn:
-            return []
-        cursor = conn.cursor()
-        # Si no pasaron schema, usar el actual de la conexión
-        if not schema:
-            schema = conn.database
-        q = """
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = %s AND table_type='BASE TABLE'
-            ORDER BY table_name;
-        """
-        cursor.execute(q, (schema,))
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        tables = [r[0].lower() for r in rows]
-        return tables
-    except Exception:
-        return []
-
-def run_query(query, params=None, fetch=True):
-    """
-    Ejecuta una query segura. Si fetch=True retorna filas (lista de dicts).
-    Si fetch=False hace commit y retorna True/False.
+    Ejecuta consulta segura. Retorna filas (list[dict]) si fetch=True, True si sin fetch (commit), None en error.
     """
     conn = get_connection()
     if not conn:
-        # retornar None para identificar fallo de conexión
         return None
 
     try:
         cursor = conn.cursor(dictionary=True)
         cursor.execute(query, params or ())
         if fetch:
-            result = cursor.fetchall()
+            rows = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            return rows
         else:
             conn.commit()
-            result = True
+            cursor.close()
+            conn.close()
+            return True
+    except Exception as e:
+        # no usar st.error en librerías reutilizables normalmente, pero para debug en Streamlit es útil
+        st.error(f"Error en run_query(): {e}")
+        return None
+
+def test_connection():
+    """
+    Retorna (True, mensaje) si ok, (False, mensaje) si error.
+    """
+    conn = get_connection()
+    if not conn:
+        return False, "No se pudo crear conexión (secrets faltantes o incorrectos)."
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1;")
+        cursor.fetchall()
         cursor.close()
         conn.close()
-        return result
+        return True, "Conexión OK"
     except Exception as e:
-        # Si quieres ver el error en Streamlit: st.error(...)
-        return None
+        return False, str(e)
+
+def get_table_names():
+    """
+    Devuelve lista de nombres de tablas en la BD o [] si error.
+    """
+    q = "SHOW TABLES;"
+    rows = run_query(q, fetch=True)
+    if rows is None:
+        return []
+    # cuando cursor.dictionary=True, cada fila es { 'Tables_in_dbname': 'table' }
+    tables = []
+    if rows:
+        # manejar clave indeterminada: tomar el primer valor de cada row
+        for r in rows:
+            if isinstance(r, dict) and r:
+                tables.append(list(r.values())[0])
+            else:
+                # si viene como tupla
+                tables.append(r[0])
+    return tables
+
+def get_role_permissions_from_db():
+    """
+    Intenta leer la tabla role_permission (columns: role, table_name).
+    Retorna dict: { role_name: [table1, table2, ...], ... }
+    Si no existe o error, retorna {}.
+    """
+    # check table exists:
+    try:
+        rows = run_query("SHOW TABLES LIKE 'role_permission';", fetch=True)
+        if not rows:
+            return {}
+    except Exception:
+        return {}
+
+    # read permissions
+    rows = run_query("SELECT role, table_name FROM role_permission;", fetch=True)
+    if not rows:
+        return {}
+    perms = {}
+    for r in rows:
+        role = r.get("role") or r.get("role_name") or r.get("role")
+        table = r.get("table_name")
+        if not role or not table:
+            continue
+        perms.setdefault(role, []).append(table)
+    return perms
