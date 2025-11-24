@@ -1,77 +1,92 @@
 import streamlit as st
 import mysql.connector
+from mysql.connector import Error
+import os
 
-# -----------------------------
-# 1. Conexión a la BD
-# -----------------------------
+def get_db_config():
+    try:
+        s = st.secrets["db"]
+        return {
+            "host": s.get("host"),
+            "user": s.get("user"),
+            "password": s.get("password"),
+            "database": s.get("database"),
+            "port": int(s.get("port", 3306))
+        }
+    except Exception:
+        return {
+            "host": os.getenv("DB_HOST"),
+            "user": os.getenv("DB_USER"),
+            "password": os.getenv("DB_PASS"),
+            "database": os.getenv("DB_NAME"),
+            "port": int(os.getenv("DB_PORT", 3306))
+        }
+
 def get_connection():
+    cfg = get_db_config()
+    if not cfg["host"] or not cfg["user"]:
+        st.error("st.secrets['db'] no configurado o variables de entorno faltantes.")
+        return None
     try:
         conn = mysql.connector.connect(
-            host=st.secrets["db"]["host"],
-            user=st.secrets["db"]["user"],
-            password=st.secrets["db"]["password"],
-            database=st.secrets["db"]["database"],
-            port=st.secrets["db"]["port"]
+            host=cfg["host"],
+            user=cfg["user"],
+            password=cfg["password"],
+            database=cfg["database"],
+            port=cfg["port"],
+            connection_timeout=10
         )
         return conn
-    except Exception as e:
-        st.error(f"❌ Error conectando a la BD: {e}")
+    except Error as e:
+        st.error(f"Error de conexión a la BD: {e}")
         return None
 
-
-# -----------------------------
-# 2. Probar conexión
-# -----------------------------
 def test_connection():
     conn = get_connection()
-    if conn:
+    if not conn:
+        return False
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.close()
         conn.close()
         return True
-    return False
+    except Exception as e:
+        st.error(f"Error probando BD: {e}")
+        return False
 
-
-# -----------------------------
-# 3. Obtener nombres de tablas
-# -----------------------------
 def get_table_names():
     conn = get_connection()
     if not conn:
         return None
-
     try:
-        cursor = conn.cursor()
-        cursor.execute("SHOW TABLES;")
-        tables = [row[0] for row in cursor.fetchall()]
-        cursor.close()
+        cur = conn.cursor()
+        cur.execute("SHOW TABLES;")
+        rows = cur.fetchall()
+        cur.close()
         conn.close()
-        return tables
+        return [r[0] for r in rows]
     except Exception as e:
-        st.error(f"Error obteniendo tablas: {e}")
+        st.error(f"Error listando tablas: {e}")
         return None
 
-
-# -----------------------------
-# 4. Ejecutar query genérico
-# -----------------------------
 def run_query(query, params=None, fetch=True):
     conn = get_connection()
     if not conn:
         return None
-
     try:
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute(query, params or ())
-
+        cur = conn.cursor(dictionary=True)
+        cur.execute(query, params or ())
         if fetch:
-            result = cursor.fetchall()
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+            return rows
         else:
             conn.commit()
-            result = True
-
-        cursor.close()
-        conn.close()
-        return result
-
+            cur.close()
+            conn.close()
+            return True
     except Exception as e:
         st.error(f"Error en run_query(): {e}")
         return None
