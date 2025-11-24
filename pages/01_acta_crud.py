@@ -66,4 +66,3 @@ if id_edit:
                 st.error("Error al eliminar.")
     else:
         st.warning("No se encontró acta con ese id.")
-
