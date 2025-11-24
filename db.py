@@ -1,73 +1,91 @@
-# db.py
 import streamlit as st
 import mysql.connector
-from mysql.connector import Error
-from contextlib import contextmanager
 
-# Lee credenciales desde st.secrets
-def _get_db_config():
-    try:
-        cfg = st.secrets["db"]
-        return {
-            "host": cfg.get("host"),
-            "user": cfg.get("user"),
-            "password": cfg.get("password"),
-            "database": cfg.get("database"),
-            "port": int(cfg.get("port", 3306))
-        }
-    except Exception:
-        # Si no hay secrets, intenta variables de entorno por compatibilidad
-        return None
-
-@contextmanager
+# ----------------------------------------------------------
+# 1) OBTENER CREDENCIALES DESDE STREAMLIT SECRETS
+# ----------------------------------------------------------
 def get_connection():
     """
-    Context manager que devuelve un objeto de conexión.
-    Uso:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            ...
+    Crea y devuelve una conexión a MySQL usando los datos de st.secrets["db"].
     """
-    cfg = _get_db_config()
-    if not cfg:
-        raise RuntimeError("No DB config found. Set st.secrets['db']")
-    conn = None
     try:
-        conn = mysql.connector.connect(
-            host=cfg["host"],
-            user=cfg["user"],
-            password=cfg["password"],
-            database=cfg["database"],
-            port=cfg["port"],
-            autocommit=True
-        )
-        yield conn
-    except Error as e:
-        # reenviar excepcion para que la UI la muestre
-        raise e
-    finally:
-        if conn and conn.is_connected():
-            conn.close()
+        db_config = {
+            "host": st.secrets["db"]["host"],
+            "user": st.secrets["db"]["user"],
+            "password": st.secrets["db"]["password"],
+            "database": st.secrets["db"]["database"],
+            "port": st.secrets["db"].get("port", 3306)
+        }
 
-def run_query(query, params=None, fetch=False):
-    """Ejecuta una consulta. Si fetch True, devuelve lista de tuplas o diccionarios según fetchall"""
-    with get_connection() as conn:
+        return mysql.connector.connect(**db_config)
+
+    except Exception as e:
+        st.error(f"❌ Error conectando a la base de datos: {e}")
+        return None
+
+
+# ----------------------------------------------------------
+# 2) FUNCIÓN GENÉRICA PARA EJECUTAR QUERIES
+# ----------------------------------------------------------
+def run_query(query, params=None, fetch=True):
+    """
+    Ejecuta una consulta SQL segura.
+    - query: SQL a ejecutar
+    - params: valores opcionales
+    - fetch=True devuelve filas, False solo ejecuta INSERT/UPDATE/DELETE
+    """
+    conn = get_connection()
+    if not conn:
+        return None
+
+    try:
         cursor = conn.cursor(dictionary=True)
         cursor.execute(query, params or ())
+        
         if fetch:
-            rows = cursor.fetchall()
-            cursor.close()
-            return rows
+            result = cursor.fetchall()
         else:
-            cursor.close()
-            return None
+            conn.commit()
+            result = True
 
-def get_table_names():
-    """Devuelve lista de tablas en la BD"""
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SHOW TABLES")
-        rows = cursor.fetchall()
         cursor.close()
-        # rows es lista de tuplas, tomar primer elemento de cada tupla
-        return [r[0] for r in rows]
+        conn.close()
+        return result
+
+    except Exception as e:
+        st.error(f"⚠ Error en run_query(): {e}")
+        return None
+
+
+# ----------------------------------------------------------
+# 3) LISTAR TODAS LAS TABLAS DE LA BASE
+# ----------------------------------------------------------
+def get_table_names():
+    """
+    Devuelve una lista con los nombres de todas las tablas.
+    """
+    query = "SHOW TABLES;"
+    result = run_query(query)
+
+    if not result:
+        return []
+
+    # Cada resultado viene como {"Tables_in_nombreBD": "acta"}
+    return [list(row.values())[0] for row in result]
+
+
+# ----------------------------------------------------------
+# 4) TEST DE CONEXIÓN (opcional pero útil)
+# ----------------------------------------------------------
+def test_connection():
+    """
+    Verifica si la conexión funciona.
+    """
+    try:
+        conn = get_connection()
+        if conn:
+            conn.close()
+            return True
+        return False
+    except:
+        return False
