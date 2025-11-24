@@ -1,53 +1,44 @@
 # db.py
 import os
 import streamlit as st
+import mysql.connector
+from mysql.connector import Error
 
-try:
-    import mysql.connector
-    from mysql.connector import Error
-except Exception as e:
-    # En despliegue en Streamlit Cloud, si falta el paquete, el logs lo mostrarán.
-    raise
-
-def _read_db_config():
+def get_db_config():
     """
-    Lee credenciales desde st.secrets['db'] si existe, 
-    o desde variables de entorno DB_HOST, DB_USER, DB_PASS, DB_NAME, DB_PORT.
+    Lee la configuración de conexión desde st.secrets['db'] o variables de entorno.
+    En Streamlit Cloud: añade en Secrets (Settings -> Secrets) una sección 'db' con:
+    host, user, password, database, port (opcional)
+    Ejemplo (secrets.toml):
+    [db]
+    host = "mi-host"
+    user = "mi-usuario"
+    password = "mi-pass"
+    database = "mi_db"
+    port = 3306
     """
-    host = port = user = password = database = None
-
-    # Preferir st.secrets (Streamlit Cloud)
-    if hasattr(st, "secrets") and st.secrets is not None:
-        dbsec = st.secrets.get("db") or st.secrets
-        host = dbsec.get("DB_HOST") or dbsec.get("host") or dbsec.get("db_host")
-        user = dbsec.get("DB_USER") or dbsec.get("user")
-        password = dbsec.get("DB_PASS") or dbsec.get("password")
-        database = dbsec.get("DB_NAME") or dbsec.get("database")
-        port = dbsec.get("DB_PORT") or dbsec.get("port")
-    # Fallback a variables de entorno
-    host = host or os.environ.get("DB_HOST")
-    user = user or os.environ.get("DB_USER")
-    password = password or os.environ.get("DB_PASS")
-    database = database or os.environ.get("DB_NAME")
-    port = port or os.environ.get("DB_PORT") or 3306
-
-    return {
-        "host": host,
-        "user": user,
-        "password": password,
-        "database": database,
-        "port": int(port) if port else 3306,
-    }
+    # Intentar st.secrets['db']
+    try:
+        db_secret = st.secrets["db"]
+        host = db_secret.get("host")
+        user = db_secret.get("user")
+        password = db_secret.get("password")
+        database = db_secret.get("database")
+        port = int(db_secret.get("port", 3306))
+        return {"host": host, "user": user, "password": password, "database": database, "port": port}
+    except Exception:
+        # Intentar variables de entorno como fallback
+        host = os.getenv("DB_HOST")
+        user = os.getenv("DB_USER")
+        password = os.getenv("DB_PASSWORD")
+        database = os.getenv("DB_NAME")
+        port = int(os.getenv("DB_PORT", 3306))
+        return {"host": host, "user": user, "password": password, "database": database, "port": port}
 
 def get_connection():
-    """
-    Intenta devolver una conexión mysql.connector.
-    Retorna la conexión (object) o None en caso de error.
-    """
-    cfg = _read_db_config()
+    cfg = get_db_config()
     if not cfg["host"] or not cfg["user"] or not cfg["database"]:
         return None
-
     try:
         conn = mysql.connector.connect(
             host=cfg["host"],
@@ -55,22 +46,21 @@ def get_connection():
             password=cfg["password"],
             database=cfg["database"],
             port=cfg["port"],
-            connection_timeout=5
+            connection_timeout=10
         )
         return conn
     except Error as e:
-        # No usar st.error aquí porque pueden llamarlo desde fuera,
-        # se devuelve None y el caller puede mostrar el error.
+        # no usar st.* aquí si quieres que la función sea utilizable fuera de streamlit
+        # pero devolvemos None y el error arriba si se necesita
         return None
 
 def test_connection():
     """
-    Devuelve siempre una tupla (ok: bool, message: str)
+    Intenta conectarse y devuelve (True, mensaje) o (False, mensaje)
     """
-    cfg = _read_db_config()
+    cfg = get_db_config()
     if not cfg["host"] or not cfg["user"] or not cfg["database"]:
-        return False, "Faltan credenciales (DB_HOST/DB_USER/DB_NAME). Añade st.secrets o variables de entorno."
-
+        return False, "Falta configuración DB en secrets o variables de entorno."
     try:
         conn = mysql.connector.connect(
             host=cfg["host"],
@@ -78,59 +68,64 @@ def test_connection():
             password=cfg["password"],
             database=cfg["database"],
             port=cfg["port"],
-            connection_timeout=5
+            connection_timeout=8
         )
         if conn and conn.is_connected():
             conn.close()
             return True, "Conexión OK"
-        else:
-            return False, "No se pudo conectar (conexión no establecida)."
+        return False, "No se pudo establecer conexión"
     except Error as e:
         return False, f"Error conectando a la BD: {e}"
 
-def get_table_names():
+def get_table_names(schema=None):
     """
-    Devuelve lista de tablas (strings) o None en caso de error.
+    Devuelve lista de tablas en la base de datos (names en minúscula).
+    Si hay error devuelve [].
     """
-    conn = get_connection()
-    if not conn:
-        return None
     try:
-        cur = conn.cursor()
-        cur.execute("SHOW TABLES;")
-        rows = cur.fetchall()
-        cur.close()
+        conn = get_connection()
+        if not conn:
+            return []
+        cursor = conn.cursor()
+        # Si no pasaron schema, usar el actual de la conexión
+        if not schema:
+            schema = conn.database
+        q = """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = %s AND table_type='BASE TABLE'
+            ORDER BY table_name;
+        """
+        cursor.execute(q, (schema,))
+        rows = cursor.fetchall()
+        cursor.close()
         conn.close()
-        # rows come as tuples like [('acta',), ('miembro',)]
-        return [r[0] for r in rows]
-    except Exception as e:
-        return None
+        tables = [r[0].lower() for r in rows]
+        return tables
+    except Exception:
+        return []
 
 def run_query(query, params=None, fetch=True):
     """
-    Ejecuta una consulta SQL segura.
-    - query: SQL a ejecutar
-    - params: valores opcionales (tuple/list)
-    - fetch=True devuelve filas, False solo ejecuta INSERT/UPDATE/DELETE
+    Ejecuta una query segura. Si fetch=True retorna filas (lista de dicts).
+    Si fetch=False hace commit y retorna True/False.
     """
     conn = get_connection()
     if not conn:
+        # retornar None para identificar fallo de conexión
         return None
 
     try:
-        cursor = conn.cursor(dictionary=True)  # retorna dicts
+        cursor = conn.cursor(dictionary=True)
         cursor.execute(query, params or ())
-        
         if fetch:
             result = cursor.fetchall()
         else:
             conn.commit()
             result = True
-
         cursor.close()
         conn.close()
         return result
-
     except Exception as e:
-        # En app principal ya mostramos errores a usuario, aquí devolvemos None
+        # Si quieres ver el error en Streamlit: st.error(...)
         return None
