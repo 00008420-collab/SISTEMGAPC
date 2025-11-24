@@ -1,267 +1,299 @@
 # app.py
+"""
+Página principal (landing + menú) para SGAPC.
+Requisitos:
+ - auth/login.py debe exponer `require_login()` (o `login_box()`).
+ - db.py idealmente expone `test_connection()` y `get_table_names()`, pero
+   este script maneja la ausencia de esas funciones.
+Cómo funciona:
+ - Abre la app -> si no hay sesión muestra la pantalla de inicio/login.
+ - Tras iniciar sesión, muestra el dashboard de bienvenida y la barra lateral
+   con las tablas (y opciones para intentar abrir Pages automáticamente).
+"""
+
+from typing import List, Optional, Tuple
 import streamlit as st
-from typing import List, Optional, Tuple, Any
-from db import run_query  # debe existir en tu repo
+import os
 import html
 
-st.set_page_config(
-    page_title="SGAPC - Menú principal",
-    layout="wide",
-)
+# Import auth helper (require_login must stop la ejecución si no hay sesión)
+try:
+    from auth.login import require_login, login_box
+except Exception:
+    # Fallback: si falta el módulo, definimos un require_login dummy para evitar crashes.
+    def login_box():
+        st.warning("Falta auth/login.py. Añádelo al proyecto.")
+    def require_login():
+        login_box()
+        st.stop()
 
-# -------------------------
-# UTIL: consulta tablas
-# -------------------------
-def get_table_names_from_db() -> Optional[List[str]]:
-    """Intenta obtener nombres de tablas. Usa SHOW TABLES si get_table_names no existe."""
+# Import DB helpers (opcionales)
+try:
+    from db import test_connection, get_table_names
+except Exception:
+    test_connection = None
+    get_table_names = None
+
+
+# ---------------------------
+# Helpers UI y navegación
+# ---------------------------
+ICON = "📘"
+
+# Mapeo estético: nombre de página (archivo pages) -> título legible + icon
+DEFAULT_PAGE_MAP = {
+    "01_acta_crud": ("Actas", "📝"),
+    "02_administrador_crud": ("Administradores", "👤"),
+    "03_ahorro_crud": ("Ahorros", "💰"),
+    "04_aporte_crud": ("Aportes", "🏦"),
+    "05_asistencia_crud": ("Asistencias", "📋"),
+    "06_caja_crud": ("Caja", "📥"),
+    "07_ciclo_crud": ("Ciclos", "🔁"),
+    "08_cierre_crud": ("Cierres", "🔒"),
+    "09_cuota_crud": ("Cuotas", "📅"),
+    "10_directiva_crud": ("Directiva", "🏛️"),
+    "11_distrito_crud": ("Distritos", "📍"),
+    "12_grupo_crud": ("Grupos", "🧑‍🤝‍🧑"),
+    "13_miembro_crud": ("Miembros", "👥"),
+    "14_multa_crud": ("Multas", "⚠️"),
+    "15_pago_crud": ("Pagos", "💳"),
+    "16_prestamo_crud": ("Préstamos", "🏦"),
+    "17_promotora_crud": ("Promotoras", "📣"),
+    "18_reporte_crud": ("Reportes", "📊"),
+    "19_reunion_crud": ("Reuniones", "🗓️"),
+    "20_tipo_usuario_crud": ("Tipos de usuario", "🔐"),
+    # Add more if you have extra pages (users, permission, ...)
+}
+
+def set_query_page(page_key: str):
+    """
+    Intenta abrir la Page usando query params.
+    Streamlit Pages puede abrirse con ?page=pagename en ciertas versiones.
+    """
     try:
-        # Intentamos función común (si la tienes implementada en db.py)
-        res = run_query("SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE()", fetch=True)
-        if res:
-            # res podría venir como lista de dicts o lista de tuples
-            names = []
-            for row in res:
-                if isinstance(row, dict):
-                    # toma la primera columna
-                    first = next(iter(row.values()))
-                    names.append(str(first))
-                elif isinstance(row, (list, tuple)):
-                    names.append(str(row[0]))
-                else:
-                    names.append(str(row))
-            return names
+        # Guardar un valor en query params (intento de navegación)
+        st.experimental_set_query_params(page=page_key)
     except Exception:
+        # No fatal — fallback en UI
         pass
 
-    # Fallback a SHOW TABLES
-    try:
-        res = run_query("SHOW TABLES", fetch=True)
-        if not res:
-            return []
-        names = []
-        for row in res:
-            if isinstance(row, dict):
-                first = next(iter(row.values()))
-                names.append(str(first))
-            elif isinstance(row, (list, tuple)):
-                names.append(str(row[0]))
-            else:
-                names.append(str(row))
-        return names
-    except Exception as e:
-        st.error(f"Error obteniendo tablas: {e}")
-        return None
 
-# -------------------------
-# AUTENTICACIÓN
-# -------------------------
-def check_sha2_login(username: str, password: str) -> Optional[dict]:
+def pretty_list_from_table_names(tables: List[str]) -> List[Tuple[str, str]]:
     """
-    Intenta autenticar usando SHA2 en MySQL:
-    SELECT * FROM users WHERE username=%s AND password_hash=SHA2(%s,256)
-    (funciona si en tu BD el password se guardó como SHA2(...,256))
+    Recibe una lista de nombres de tablas (o páginas) y devuelve pares (page_key, title)
+    donde page_key será el nombre de la Page (sin sufijos).
     """
-    try:
-        q = """
-        SELECT * FROM users
-        WHERE username = %s AND password_hash = SHA2(%s,256)
-        LIMIT 1
-        """
-        res = run_query(q, (username, password), fetch=True)
-        if res:
-            # devolver fila como dict o tuple
-            return res[0]
-    except Exception as e:
-        # No detener; el método SHA2 no es obligatorio
-        st.debug(f"SHA2 auth error: {e}")
-    return None
+    out = []
+    for t in tables:
+        key = t.strip()
+        # Si ya coincide con un key del DEFAULT_PAGE_MAP lo usamos,
+        # si no, intentamos normalizar: quitar sufijos como "_crud" o "crud"
+        norm = key
+        if norm.endswith("_crud"):
+            norm = norm[:-5]
+        if norm.endswith("crud"):
+            norm = norm[:-4]
 
-def check_plain_or_direct(username: str, password: str) -> Optional[dict]:
+        # buscar un key en DEFAULT_PAGE_MAP que contenga norm
+        found = None
+        for page_key in DEFAULT_PAGE_MAP.keys():
+            if norm in page_key:
+                found = page_key
+                break
+
+        if found is None:
+            # Si la tabla es exactamente el nombre de una page candidate, usarla
+            if key in DEFAULT_PAGE_MAP:
+                found = key
+        if found is None:
+            # Si no se encontró, generamos un page-like key usando nombre original (limpio)
+            # e.g. "mi_tabla" -> "mi_tabla_crud"
+            cand = f"{norm}_crud"
+            found = cand
+
+        # Título: si está en DEFAULT_PAGE_MAP lo tomamos, si no lo capitalizamos
+        title = DEFAULT_PAGE_MAP.get(found, (found.replace("_", " ").title(), "📁"))[0]
+        out.append((found, title))
+    return out
+
+
+# ---------------------------
+# Layout: hero / login screen
+# ---------------------------
+def show_hero_login():
     """
-    Intenta autenticar comparando directamente el campo password_hash con el password ingresado.
-    Esto ayuda si en tu tabla el password se almacenó en texto simple (no recomendado).
+    Pantalla de inicio estilo 'hero' con login al centro-derecha.
+    Si ya se inició sesión, esta función no hará nada.
     """
-    try:
-        q = "SELECT * FROM users WHERE username = %s AND password_hash = %s LIMIT 1"
-        res = run_query(q, (username, password), fetch=True)
-        if res:
-            return res[0]
-    except Exception:
-        pass
-    return None
+    # Si ya hay sesión, no mostrar hero
+    if "logged_in" in st.session_state and st.session_state.logged_in:
+        return
 
-def user_exists(username: str) -> bool:
-    try:
-        q = "SELECT 1 FROM users WHERE username = %s LIMIT 1"
-        res = run_query(q, (username,), fetch=True)
-        return bool(res)
-    except Exception:
-        return False
+    st.set_page_config(page_title="SGAPC - Inicio", layout="wide")
+    # Hero layout: dos columnas, izquierda visual grande, derecha formulario
+    col_left, col_right = st.columns([1.4, 1])
+    with col_left:
+        st.markdown(
+            """
+            <div style="background: linear-gradient(135deg,#0f1724,#0b1223); padding:32px; border-radius:12px;">
+            <h1 style="color: #ffffff; font-size:44px; margin-bottom:6px;">Welcome Back</h1>
+            <p style="color: #cbd5e1; font-size:16px; max-width:680px;">
+              Bienvenido(a) al sistema de gestión. Inicia sesión para acceder a los módulos:
+              miembros, aportes, préstamos, caja y más.
+            </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-def login_user(username: str, password: str) -> Tuple[bool, str, Optional[dict]]:
-    """
-    Intenta login con varios métodos. Devuelve (ok, mensaje, user_row_or_None)
-    """
-    # 1) Intentar SHA2 (recomendado si tus inserts usaron SHA2(...,256))
-    row = check_sha2_login(username, password)
-    if row:
-        return True, "Autenticado (SHA2)", row
+    with col_right:
+        # Mostrar la caja de login provista por auth/login.py
+        login_box()
 
-    # 2) Intentar comparación directa (no recomendado, pero por compatibilidad)
-    row = check_plain_or_direct(username, password)
-    if row:
-        return True, "Autenticado (match directo)", row
-
-    # 3) Si la cuenta existe pero no podemos validar (hash scrypt u otro), permitir si el usuario
-    # ha configurado ADMIN_BYPASS en secrets (un token de emergencia).
-    if user_exists(username):
-        bypass = st.secrets.get("ADMIN_BYPASS", None)
-        if bypass and password == bypass:
-            row = run_query("SELECT * FROM users WHERE username = %s LIMIT 1", (username,), fetch=True)
-            return True, "Autenticado con ADMIN_BYPASS (token en secrets)", row[0] if row else None
-
-        # informar que la cuenta existe pero no se pudo verificar
-        return False, ("La cuenta existe pero la app no pudo verificar la contraseña (hash no compatible). "
-                       "Si quieres permitir login con este método, crea el usuario usando SHA2 en la BD "
-                       "o añade ADMIN_BYPASS en secrets."), None
-
-    # 4) no existe
-    return False, "Usuario o contraseña incorrectos.", None
-
-# -------------------------
-# LAYOUT: LOGIN BONITO
-# -------------------------
-def show_login_page():
-    st.markdown(
-        """
-        <style>
-        /* fondo lateral e imagen hero si deseas (opcional) */
-        .hero {
-            padding: 40px;
-            color: white;
-        }
-        .login-box {
-            background: rgba(255,255,255,0.03);
-            border-radius: 10px;
-            padding: 18px;
-            box-shadow: 0 6px 18px rgba(0,0,0,0.4);
-        }
-        .big-title {
-            font-size: 48px;
-            font-weight:800;
-            margin-bottom: 8px;
-        }
-        .muted {
-            color: #cbd5e1;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # Layout: columnas (izquierda grande con hero, derecha estrecha con login)
-    left_col, right_col = st.columns([2.6, 1])
-
-    with left_col:
-        st.markdown('<div class="big-title">Welcome Back</div>', unsafe_allow_html=True)
-        st.markdown('<div class="muted">Bienvenido al sistema SGAPC. Inicia sesión para acceder al panel.</div>',
-                    unsafe_allow_html=True)
-        st.write("")  # espacio
-
-    with right_col:
-        st.markdown('<div class="login-box">', unsafe_allow_html=True)
-        st.subheader("Sign in")
-        username = st.text_input("Usuario", key="login_username")
-        password = st.text_input("Contraseña", type="password", key="login_password")
-        remember = st.checkbox("Recordarme", key="login_remember")
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            login_btn = st.button("Iniciar sesión", key="login_btn")
-        with col2:
-            st.write("")  # placeholder para equilibrio
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        # mensajes informativos
-        st.write("")
-        st.info("Si tu contraseña en la BD está hasheada con scrypt o con un esquema no compatible, "
-                "usa la opción de creación de usuario con SHA2 o configura ADMIN_BYPASS en secrets.")
-
-        return username, password, login_btn
-
-# -------------------------
-# PÁGINA PRINCIPAL POST-LOGIN
-# -------------------------
-def show_main_page(user_row: dict, table_names: List[str]):
-    # menú superior / bienvenida
-    st.markdown(f"### Bienvenido, **{html.escape(str(user_row.get('username', 'Usuario')))}**")
-    st.write("Usa la barra lateral para abrir los CRUDs disponibles (Pages).")
-
-    # Comprobación rápida de BD
-    st.markdown("## 🔎 Comprobación rápida de la base de datos")
-    st.success("Conexión establecida — Conexión OK")
-    st.write("Tablas detectadas:")
-    st.write(", ".join(table_names) if table_names else "No se detectaron tablas.")
-
-    # Mostrar menú de acceso rápido (links a páginas, si deseas)
+    # Añadimos un separador y seguimos con el resto de la página (si no logueado, require_login detendrá)
     st.markdown("---")
-    st.markdown("### Atajos (haz clic para ver la Page desde el panel lateral)")
-    for i, name in enumerate(table_names, start=1):
-        # mostrar nombre amigable removiendo prefijo numérico si lo tuvieras
-        pretty = name.replace("_", " ").title()
-        st.write(f"- `{i:02d}` **{pretty}** ({name})")
 
-# -------------------------
-# MAIN
-# -------------------------
-def main():
+
+# ---------------------------
+# Dashboard después de login
+# ---------------------------
+def show_dashboard(tables: List[Tuple[str, str]]):
+    """
+    Muestra el dashboard principal con tarjetas y shortcuts.
+    tables: lista de (page_key, title)
+    """
     st.title("SGAPC - Menú principal")
+    st.markdown("Bienvenido al sistema. Usa la barra lateral para navegar entre módulos.")
 
-    # Si ya hay sesión iniciada, mostrar main. Sino mostrar login.
-    if "logged_in" not in st.session_state:
-        st.session_state.logged_in = False
-        st.session_state.user = None
+    # Quick DB status
+    db_ok = False
+    db_msg = "Sin comprobación"
+    if callable(test_connection):
+        try:
+            ok, msg = test_connection()
+            db_ok = ok
+            db_msg = msg
+        except Exception as e:
+            db_ok = False
+            db_msg = f"Error comprobando DB: {e}"
 
-    # Si no conectado a DB: lo indicamos y paramos
-    # Probamos una consulta simple para detectar si DB funciona (run_query debe estar OK)
-    table_names = None
-    try:
-        table_names = get_table_names_from_db()
-    except Exception as e:
-        st.error(f"Error comprobando BD: {e}")
+    if db_ok:
+        st.success(f"Conexión establecida ✅ — {db_msg}")
+    else:
+        st.warning(f"Conexión DB: {db_msg}")
 
-    # Si no logged_in -> mostrar login
-    if not st.session_state.logged_in:
-        username, password, login_btn = show_login_page()
+    # Tarjetas principales (3 columnas)
+    ncols = 3
+    cols = st.columns(ncols)
+    # Mostrar primeras 9 como tarjetas
+    for idx, (page_key, title) in enumerate(tables[:9]):
+        col = cols[idx % ncols]
+        icon = DEFAULT_PAGE_MAP.get(page_key, ("", "📁"))[1]
+        with col:
+            st.markdown(
+                f"""
+                <div style="background:#0b1220; padding:18px; border-radius:12px; box-shadow: 0 2px 6px rgba(0,0,0,0.5);">
+                  <div style="font-size:20px; font-weight:700; color:#e6edf3;">{icon} {title}</div>
+                  <div style="color:#9aa7b2; margin-top:8px; font-size:13px;">
+                    Abrir módulo y gestionar registros.
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button(f"Abrir {title}", key=f"open_{page_key}"):
+                # Intentamos navegar a la Page
+                set_query_page(page_key)
+                st.info(
+                    f"Intentando abrir la Page `{page_key}`. "
+                    "Si tu versión de Streamlit no soporta navegación automática, abre la Page desde el menú lateral (Pages)."
+                )
 
-        if login_btn:
-            with st.spinner("Autenticando..."):
-                ok, msg, user_row = login_user(username.strip(), password)
-                if ok:
-                    st.session_state.logged_in = True
-                    st.session_state.user = user_row
-                    st.success(msg)
-                    # recargar la página para que el resto se muestre de forma "limpia"
-                    st.experimental_rerun()
-                else:
-                    st.error(msg)
-        else:
-            # muestra estado de conexión (en la misma página de login)
-            if table_names is None:
-                st.warning("La aplicación no pudo comprobar la base de datos. Revisa los secrets y credenciales.")
-            elif not table_names:
-                st.info("Conexión establecida pero no se encontraron tablas (o no pudo listarlas).")
-            else:
-                # opcional: mostrar un pequeño resumen debajo del login
-                st.info(f"Conexión OK — {len(table_names)} tablas detectadas.")
-        return  # no ejecutar el resto hasta iniciar sesión
+    st.markdown("---")
+    st.header("Todos los módulos")
+    # Lista completa en 2 columnas:
+    left, right = st.columns([1, 1])
+    half = (len(tables) + 1) // 2
+    for (page_key, title) in tables[:half]:
+        with left:
+            st.markdown(f"- [{html.escape(title)}](#)  <small style='color:#7f8a93'>`{page_key}`</small>", unsafe_allow_html=True)
+            if st.button(f"Abrir {title}", key=f"open2_{page_key}"):
+                set_query_page(page_key)
+    for (page_key, title) in tables[half:]:
+        with right:
+            st.markdown(f"- [{html.escape(title)}](#)  <small style='color:#7f8a93'>`{page_key}`</small>", unsafe_allow_html=True)
+            if st.button(f"Abrir {title}", key=f"open2b_{page_key}"):
+                set_query_page(page_key)
 
-    # Si llegamos aquí, el usuario está autenticado
-    user_row = st.session_state.user or {}
-    # refrescar lista de tablas
-    table_names = table_names or get_table_names_from_db() or []
 
-    # show main
-    show_main_page(user_row, table_names)
+# ---------------------------
+# Sidebar (solo después de login)
+# ---------------------------
+def sidebar_menu(tables: List[Tuple[str, str]]):
+    """
+    Barra lateral con búsqueda y lista desplegable de páginas.
+    """
+    st.sidebar.title("Navegación")
+    st.sidebar.markdown("Buscar módulo y navegar")
+
+    # search input to filter tables
+    q = st.sidebar.text_input("Buscar", placeholder="Buscar page o tabla...", key="search_pages")
+    filtered = []
+    for key, title in tables:
+        if not q or q.strip().lower() in title.lower() or q.strip().lower() in key.lower():
+            filtered.append((key, title))
+
+    # Show collapsible list
+    with st.sidebar.expander("Ver módulos", expanded=True):
+        for key, title in filtered:
+            icon = DEFAULT_PAGE_MAP.get(key, ("", "📁"))[1]
+            # each module as a button
+            btn_label = f"{icon}  {title}"
+            if st.sidebar.button(btn_label, key=f"sb_{key}"):
+                set_query_page(key)
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("Usa el menú para abrir módulos. Si la navegación automática no funciona, abre las Pages desde el menú lateral 'Pages'.")
+
+
+# ---------------------------
+# Main
+# ---------------------------
+def main():
+    st.set_page_config(page_title="SGAPC", layout="wide")
+
+    # Mostrar hero/login si no autenticado
+    show_hero_login()
+
+    # Requerir login para continuar (esto detendrá la ejecución si no hay sesión)
+    user = require_login()  # retorna user_row
+
+    # Ya autenticado: construimos lista de tablas/páginas
+    page_candidates = []
+    if callable(get_table_names):
+        try:
+            # get_table_names puede devolver lista de tablas desde la BD
+            tbls = get_table_names()
+            # asegurar lista única y ordenada
+            tbls = list(dict.fromkeys(tbls))
+            # convertimos a (page_key, title)
+            page_candidates = pretty_list_from_table_names(tbls)
+        except Exception:
+            page_candidates = []
+    if not page_candidates:
+        # fallback: usar DEFAULT_PAGE_MAP
+        page_candidates = [(k, v[0]) for k, v in DEFAULT_PAGE_MAP.items()]
+
+    # Sidebar
+    sidebar_menu(page_candidates)
+
+    # Dashboard / menú principal
+    show_dashboard(page_candidates)
+
+    # Información del usuario logueado (pequeño footer)
+    st.markdown("---")
+    st.write(f"Conectado como: **{user.get('username','-')}** — rol: **{user.get('role','-')}**")
+
 
 if __name__ == "__main__":
     main()
