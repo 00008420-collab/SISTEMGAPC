@@ -1,117 +1,105 @@
-# app.py (CORREGIDO)
+# app.py
 import streamlit as st
-from auth.login import login_user
-from auth.config import check_login
-from db import get_connection, get_table_names
+from pathlib import Path
+
+# intenta importar get_connection si existe (tu db.py)
+try:
+    from db import get_connection, get_table_names
+except Exception:
+    get_connection = None
+    get_table_names = None
 
 st.set_page_config(page_title="SGAPC - Menú", layout="wide")
 
-# Inicializar estado
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-if "user" not in st.session_state:
-    st.session_state.user = {}
-
-# Mostrar formulario de login en sidebar si NO está logueado.
-# Pero solo detener la ejecución si después de mostrar el formulario
-# el usuario sigue sin iniciar sesión.
-if not st.session_state.logged_in:
-    login_user()
-    # si después del formulario el usuario NO inició sesión, detenemos
-    if not st.session_state.logged_in:
-        st.stop()
-
-# Si llegamos hasta aquí, el usuario está logueado
-check_login()
-
-# --- Prueba automática de conexión a la BD (añadir en app.py después de check_login()) ---
-import streamlit as st
-from db import get_connection, get_table_names
-
-def test_db_connection(show_counts=False, max_tables=10):
-    """
-    Intentar conectar a la BD y mostrar resultados.
-    - show_counts: si True, hace SELECT COUNT(*) por cada tabla (cuidado tablas grandes).
-    - max_tables: límite de tablas a consultar si show_counts=True.
-    """
-    st.subheader("Verificación automática de la base de datos")
-
-    conn = get_connection()
-    if not conn:
-        st.error("No se pudo establecer la conexión con la base de datos.")
-        return
-
+# ---------- helpers ----------
+def try_switch(page_name):
+    """Intenta cambiar a la page indicada. Si switch_page no existe, muestra instrucción."""
     try:
-        st.success("Conexión establecida ✅")
-        # Lista de tablas
-        tablas = get_table_names()
-        if not tablas:
-            st.info("Conexión OK pero no se detectaron tablas en la base de datos.")
-            return
-
-        st.write(f"Se detectaron {len(tablas)} tablas:")
-        # Mostrar la lista en un expander
-        with st.expander("Ver tablas"):
-            for t in tablas:
-                st.write(f"- {t}")
-
-        # Opcional: contar registros por tabla (desactivado por defecto; activar con show_counts=True)
-        if show_counts:
-            st.write("---")
-            st.write(f"Conteo de registros (máx. {max_tables} tablas):")
-            # limitar cantidad de tablas consultadas para evitar consultas largas
-            tablas_para_contar = tablas[:max_tables]
-            try:
-                cur = conn.cursor()
-                for t in tablas_para_contar:
-                    try:
-                        cur.execute(f"SELECT COUNT(*) FROM `{t}`")
-                        cnt = cur.fetchone()[0]
-                        st.write(f"`{t}` → {cnt} registros")
-                    except Exception as e_table:
-                        st.write(f"`{t}` → error contando registros: {e_table}")
-                cur.close()
-            except Exception as e_counts:
-                st.write("No se pudieron obtener los conteos de tablas:", e_counts)
-
+        st.experimental_set_query_params()  # for safety/reset
+        st.switch_page(page_name)
     except Exception as e:
-        st.error(f"Error inesperado durante la verificación: {e}")
-    finally:
+        # si switch_page no está disponible, explicamos cómo abrir la page desde el menú Pages
+        st.warning(
+            "Navegación automática no disponible (versión de Streamlit). "
+            "Abre la página desde el menú lateral 'Pages' o actualiza Streamlit."
+        )
+        st.info(f"Nombre de page objetivo: **{page_name}**")
+        st.write("También puedes usar el menú izquierdo (Pages) para abrir directamente el CRUD.")
+
+def make_btn(col, label, page_name, key=None):
+    """Crea un botón en la columna y realiza switch a page_name al pulsarlo."""
+    if col.button(label, key=key or label):
+        try_switch(page_name)
+
+# ---------- lista de pages / mapping ----------
+# Ajusta aquí los nombres exactos de tus archivos en /pages (sin .py)
+# Usa los nombres que realmente tienes en la carpeta pages/
+PAGES = [
+    ("01_acta_crud", "Acta"),
+    ("02_administrador_crud", "Administrador"),
+    ("03_ahorro_crud", "Ahorro"),
+    ("04_aporte_crud", "Aporte"),
+    ("05_asistencia_crud", "Asistencia"),
+    ("06_caja_crud", "Caja"),
+    ("07_ciclo_crud", "Ciclo"),
+    ("08_cierre_crud", "Cierre"),
+    ("09_cuota_crud", "Cuota"),
+    ("10_directiva_crud", "Directiva"),
+    ("11_distrito_crud", "Distrito"),
+    ("12_grupo_crud", "Grupo"),
+    ("13_miembro_crud", "Miembro"),
+    ("14_multa_crud", "Multa"),
+    ("15_pago_crud", "Pago"),
+    ("16_prestamo_crud", "Prestamo"),
+    ("17_promotora_crud", "Promotora"),
+    ("18_reporte_crud", "Reporte"),
+    ("19_reunion_crud", "Reunion"),
+    ("20_tipo_usuario_crud", "Tipo_usuario"),
+    # si tienes users u otro archivo, agréga aquí
+    ("users_crud", "Users (opcional)"),
+]
+
+# ---------- UI ----------
+st.title("📘 SGAPC - Menú principal (Custom)")
+st.write("Usa los botones abajo para abrir los CRUDs. Si la navegación automática no funciona, abre las Pages desde el menú izquierdo.")
+
+# fila superior: comprobación de conexión (opcional)
+with st.expander("🔍 Comprobación rápida de BD", expanded=True):
+    if get_connection:
         try:
-            conn.close()
-        except Exception:
-            pass
-
-# ---- Cómo se muestra en el menú/sidebar ----
-with st.sidebar:
-    st.markdown("### Herramientas")
-    if st.button("Probar conexión a la BD ahora"):
-        # Al pulsar el botón se ejecuta la prueba
-        test_db_connection(show_counts=False)
-
-# ---- Ejecutar la verificación automática al entrar (opcional) ----
-# Si quieres que la comprobación se ejecute automáticamente cuando el usuario entra,
-# descomenta la siguiente línea (sólo si no quieres que el usuario tenga que pulsar el botón).
-# test_db_connection(show_counts=False)
-
-st.title("📘 SGAPC - Menú")
-st.write("Bienvenido al sistema. Usa el menú izquierdo (o Pages) para abrir los CRUDs.")
-
-# --- Comprobación rápida de la BD (prueba visual) ---
-st.header("Comprobación rápida de la base de datos")
-
-conn = get_connection()
-if conn:
-    st.success("Conectado a la base de datos ✅")
-    tablas = get_table_names()
-    if tablas:
-        st.write("Tablas detectadas:")
-        st.write(", ".join(tablas))
+            conn = get_connection()
+            if conn:
+                st.success("Conexión establecida ✅")
+                try:
+                    tables = get_table_names(conn)
+                    if tables:
+                        st.write("Se detectaron tablas:", ", ".join(tables))
+                except Exception:
+                    st.info("No fue posible listar tablas (get_table_names no disponible o error).")
+            else:
+                st.error("No se pudo obtener conexión (get_connection retornó None).")
+        except Exception as e:
+            st.error("Error conectando a la BD: " + str(e))
     else:
-        st.info("No se detectaron tablas (o la consulta devolvió vacío).")
-    try:
-        conn.close()
-    except Exception:
-        pass
+        st.info("No se encontró la función get_connection. Si quieres comprobar BD aquí, añade get_connection en db.py")
+
+st.markdown("---")
+
+# Grid de botones: 3 columnas
+cols = st.columns(3)
+for i, (page_file, label) in enumerate(PAGES):
+    col = cols[i % 3]
+    make_btn(col, label, page_file, key=f"btn_{i}")
+
+st.markdown("---")
+
+# enlace al PDF del proyecto (ruta local subida)
+pdf_path = Path("/mnt/data/Proyecto final rev.pdf")
+if pdf_path.exists():
+    st.markdown("### 📎 Documentos")
+    # mostramos un botón que abre el pdf en una nueva pestaña (si el hosting lo permite)
+    st.markdown(f"[Abrir proyecto (PDF)]({pdf_path})")
 else:
-    st.error("No se pudo conectar a la base de datos. Revisa los secrets y credenciales.")
+    st.info("PDF del proyecto no encontrado en /mnt/data/Proyecto final rev.pdf")
+
+st.caption("Si al pulsar un botón no ocurre nada: 1) asegúrate de que el archivo .py correspondiente exista en /pages, 2) revisa logs en Streamlit Cloud y 3) si la app usa una versión vieja de Streamlit, la navegación automática `st.switch_page` puede no estar disponible.")
