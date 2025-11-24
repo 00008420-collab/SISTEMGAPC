@@ -1,197 +1,102 @@
 # app.py
 import streamlit as st
-from db import test_connection, get_table_names, run_query, get_role_permissions_from_db
-import hashlib
+from auth.login import require_login
+from db import run_query
+import crud_template_advanced as cta
+import os
 
-st.set_page_config(page_title="SGAPC - Portal", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="SGAPC - Portal", layout="wide")
 
-# ----------------- CSS -----------------
-STYLE = """
-<style>
-/* hero */
-.hero {
-  background: linear-gradient(90deg,#071428 0%, #0b2b44 100%);
-  padding: 28px;
-  border-radius: 8px;
-  color: #fff;
+# --- Configuración de roles: edita según tus roles y tablas ---
+# las keys son nombres de rol en la tabla users.role (o user['role'])
+# cada valor es lista de tables/pages que puede ver. Use '*' para todas.
+role_permissions = {
+    "administrador": ["*"],
+    "promotora": ["grupo", "promotora", "reporte", "miembro"],
+    "directiva": ["reunion", "miembro", "caja", "aportes", "reporte"],
+    "miembro": ["miembro", "pago", "aporte"],
+    # añade más conforme a tus necesidades
 }
-.hero h1 { font-size: 42px; margin:0 0 4px 0; }
-.hero p { color: #cfe3f5; margin:0; }
 
-/* card */
-.card {
-  background: rgba(255,255,255,0.02);
-  padding: 12px;
-  border-radius: 10px;
-  border: 1px solid rgba(255,255,255,0.03);
-}
-.small-muted { color:#98a6b3; font-size:13px; }
-</style>
-"""
-st.markdown(STYLE, unsafe_allow_html=True)
-
-# ----------------- AUTH helpers -----------------
-def hash_sha256(plain: str) -> str:
-    return hashlib.sha256(plain.encode("utf-8")).hexdigest()
-
-def get_user_by_username(username: str):
-    """
-    Lee usuario de la tabla 'users'. Ajusta nombres de columnas si los tienes distintos.
-    Espera columns: id, username, password_hash, full_name, email, role
-    """
-    q = "SELECT id, username, password_hash, full_name, email, role FROM users WHERE username = %s LIMIT 1;"
-    rows = run_query(q, (username,), fetch=True)
+# --- utilidades ---
+def tables_from_db():
+    rows = run_query("SHOW TABLES;", fetch=True)
     if not rows:
-        return None
-    return rows[0]
+        return []
+    # la fila tiene key 'Tables_in_<database>'
+    k = list(rows[0].keys())[0]
+    return [r[k] for r in rows]
 
-def verify_credentials_db(username: str, password: str):
-    """
-    Verifica contra la BD usando SHA-256 (ajusta si usas scrypt/bcrypt).
-    Retorna user dict o None.
-    """
-    user = get_user_by_username(username)
-    if not user:
-        return None
-    stored = user.get("password_hash") or ""
-    # si tu stored ya contiene 'scrypt:' u otro formato, hay que adaptar.
-    # aquí suponemos hex SHA256
-    if stored == hash_sha256(password):
-        return user
-    # si almacenaste con SHA2(mysql) (hex 64) funcionará.
-    return None
+def allowed_tables_for_role(role, all_tables):
+    perms = role_permissions.get(role, [])
+    if "*" in perms:
+        return sorted(all_tables)
+    allowed = []
+    for t in all_tables:
+        if t in perms:
+            allowed.append(t)
+    return sorted(allowed)
 
-# ----------------- Login UI -----------------
-def login_center(key_prefix="login"):
-    st.markdown('<div class="hero">', unsafe_allow_html=True)
-    st.markdown("<h1>SGAPC — Iniciar sesión</h1>", unsafe_allow_html=True)
-    st.markdown("<p>Introduce tus credenciales para continuar</p>", unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    col1, col2, col3 = st.columns([1, 0.7, 1])
-    with col2:
-        uname = st.text_input("Usuario", key=f"{key_prefix}_username")
-        pwd = st.text_input("Contraseña", type="password", key=f"{key_prefix}_password")
-        if st.button("Iniciar sesión", key=f"{key_prefix}_submit"):
-            user = verify_credentials_db(uname, pwd)
-            if user:
-                # Guarda datos mínimos en sesión
-                st.session_state["user"] = {
-                    "id": user.get("id"),
-                    "username": user.get("username"),
-                    "full_name": user.get("full_name") or user.get("username"),
-                    "role": user.get("role") or "user"
-                }
-                st.success(f"Autenticado ({user.get('role')})")
-                st.experimental_rerun()
-            else:
-                st.error("Usuario o contraseña incorrectos")
-
-# ----------------- Sidebar / Navegación -----------------
-def sidebar_menu(all_tables, allowed_tables):
-    st.sidebar.title("GAPC — Menú")
-    q = st.sidebar.text_input("Buscar...", key="sidebar_search")
-    filtered = [t for t in allowed_tables if q.lower() in t.lower()] if q else allowed_tables
-
-    st.sidebar.markdown("### Pages")
-    for t in filtered:
-        label = t.replace("_", " ").title()
-        # abrir página real: en Streamlit <latest> no hay navegación programática estable,
-        # usaremos botones que ponen en session_state['open_table']
-        if st.sidebar.button(label, key=f"btn_{t}"):
-            st.session_state["open_table"] = t
-            st.experimental_rerun()
-
-    st.sidebar.markdown("---")
-    if st.session_state.get("user"):
-        st.sidebar.write(f"Conectado: **{st.session_state['user']['username']}**")
-        if st.sidebar.button("Cerrar sesión", key="logout_btn"):
-            st.session_state.pop("user", None)
-            st.session_state.pop("open_table", None)
-            st.experimental_rerun()
-
-# ----------------- Dashboard UI -----------------
-def show_dashboard(tables):
-    st.markdown('<div class="hero">', unsafe_allow_html=True)
-    st.markdown("<h1>SGAPC - Portal</h1>", unsafe_allow_html=True)
-    st.markdown("<p>Bienvenido al sistema. Usa el menú lateral para abrir las tablas.</p>", unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-    st.markdown("")
-
-    ok, msg = test_connection()
-    if ok:
-        st.success("Conexión establecida ✅ — " + msg)
-    else:
-        st.error("Error de conexión: " + msg)
-
-    cols = st.columns(3)
-    with cols[0]:
-        st.markdown('<div class="card"><h3>Actas</h3><div class="small-muted">Registro de actas y reuniones</div></div>', unsafe_allow_html=True)
-    with cols[1]:
-        st.markdown('<div class="card"><h3>Miembros</h3><div class="small-muted">Gestión de miembros</div></div>', unsafe_allow_html=True)
-    with cols[2]:
-        st.markdown('<div class="card"><h3>Préstamos</h3><div class="small-muted">Control y pagos</div></div>', unsafe_allow_html=True)
-
-    st.markdown("### Tablas detectadas:")
-    st.write(", ".join(tables) if tables else "—")
-
-# ----------------- Role -> allowed tables mapping (fallback) -----------------
-# EDITA según tus reglas si no quieres usar la tabla role_permission
-role_table_map = {
-    "administrador": [],  # empty = acceso a todo
-    "promotora": ["promotora","grupo","miembro","reunion"],
-    "directiva": ["directiva","reunion","caja","aporte","pago"],
-    "miembro": ["miembro","aporte","pago","prestamo"],
-    "user": ["miembro"]  # ejemplo
-}
-
-def compute_allowed_tables(role, all_tables):
-    """
-    Intenta leer role_permissions desde DB; si no existe, usa role_table_map fallback.
-    Si role tiene lista vacía en role_table_map -> significa 'todo'.
-    """
-    perms = get_role_permissions_from_db()
-    if perms:
-        allowed = perms.get(role)
-        if allowed is None:
-            # si rol no definido en DB, denegar todo (o dar todo si prefieres)
-            return []
-        # filtrar solo tablas existentes
-        return [t for t in allowed if t in all_tables]
-
-    # fallback a role_table_map (hardcode)
-    if role in role_table_map:
-        allowed = role_table_map[role]
-        if allowed == []:  # [] → todo
-            return all_tables
-        return [t for t in allowed if t in all_tables]
-    # rol desconocido -> sin acceso
-    return []
-
-# ----------------- Main -----------------
+# --- inicio ---
 def main():
-    # si ya autenticado mostramos todo; si no, pedimos login
-    if not st.session_state.get("user"):
-        login_center(key_prefix="main")
-        st.stop()
+    st.title("SGAPC - Menú principal")
+    user = require_login()  # si no está autenticado, require_login mostrará el login y detendrá el flujo
 
-    user = st.session_state["user"]
-    all_tables = get_table_names()
-    # compute allowed
-    allowed = compute_allowed_tables(user.get("role"), all_tables)
+    # user es dict: leer role/username
+    role = user.get("role") or user.get("rol") or user.get("role_name") or "usuario"
+    username = user.get("username") or user.get("full_name") or "usuario"
 
-    # sidebar con solo allowed
-    sidebar_menu(all_tables, allowed)
+    # Top bar
+    st.sidebar.markdown(f"**Conectado:** {username} — _{role}_")
+    st.sidebar.button("Cerrar sesión", on_click=lambda: (st.session_state.pop("user", None), st.experimental_rerun()))
 
-    # si se pidió abrir tabla específica (session_state['open_table']), mostrar placeholder
-    open_t = st.session_state.get("open_table")
-    if open_t:
-        st.header(open_t.replace("_", " ").title())
-        st.write("Aquí irá el CRUD de la tabla:", open_t)
-        st.write(" (Implementa la carga de la Page correspondiente o queries específicas)")
-        st.stop()
+    # intentamos conectar DB y listar tablas
+    st.subheader("Comprobación rápida de la base de datos")
+    tables = tables_from_db()
+    if not tables:
+        st.error("No se pudieron listar tablas. Revisa st.secrets['db'] y la conexión.")
+    else:
+        st.success("Conexión establecida ✅ — Conexión OK")
 
-    show_dashboard(all_tables)
+    # Filtrar tablas según rol
+    allowed = allowed_tables_for_role(role, tables)
+
+    # Sidebar: lista desplegable/expandible de tablas permitidas
+    with st.sidebar.expander("GAPC — Menú", expanded=True):
+        st.markdown("**Buscar...**")
+        q = st.text_input("", key="sidebar_search")
+        if q:
+            filtered = [t for t in allowed if q.lower() in t.lower()]
+        else:
+            filtered = allowed
+        # lista simplificada (sólo mostrar nombres bonitos)
+        for t in filtered:
+            pretty = t.replace("_", " ").title()
+            if st.button(pretty, key=f"open_{t}"):
+                # intentamos abrir la page mediante query param (no funciona en todas las versiones)
+                st.experimental_set_query_params(page=t)
+                st.experimental_rerun()
+
+    # Main content: tarjetas resumen (puedes personalizar)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total tablas detectadas", len(tables))
+    with col2:
+        st.metric("Tablas disponibles para tu rol", len(allowed))
+    with col3:
+        st.write(" ")
+
+    st.markdown("---")
+    st.header("Tablas detectadas:")
+    if tables:
+        st.write(", ".join(tables))
+
+    # Mostrar accesos rápidos (links a pages). En versiones antiguas no se abrirán automáticamente.
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**Accesos Rápidos**")
+    for t in allowed[:20]:
+        pretty = t.replace("_", " ").title()
+        st.sidebar.markdown(f"- {pretty}")
 
 if __name__ == "__main__":
     main()
