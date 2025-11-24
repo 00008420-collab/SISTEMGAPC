@@ -1,44 +1,45 @@
-# auth/login.py
 import streamlit as st
 import hashlib
 from db import run_query
-from auth.config import SESSION_USER_KEY
+from auth.helpers import set_current_user, get_current_user, logout
 
-def hash_password(pw: str):
-    return hashlib.sha256(pw.encode("utf-8")).hexdigest()
+def _hash_password(password: str):
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
-def login_user():
-    st.sidebar.title("Iniciar sesión")
-    username = st.sidebar.text_input("Usuario", key="auth_user")
-    password = st.sidebar.text_input("Contraseña", type="password", key="auth_pass")
-    if st.sidebar.button("Iniciar sesión"):
-        # buscar usuario en la tabla users (ajusta campos)
-        sql = "SELECT id, username, nombre, correo, password_hash, id_tipo_usuario FROM users WHERE username=%s LIMIT 1"
-        rows = run_query(sql, (username,))
-        if not rows:
-            st.sidebar.error("Usuario no encontrado")
-            return False
-        user = rows[0]
-        # asumimos password_hash guarda SHA256 hex
-        if user.get("password_hash") == hash_password(password):
-            # login OK
-            st.success(f"Bienvenido, {user.get('nombre') or username}")
-            st.session_state[SESSION_USER_KEY] = {
-                "id": user.get("id"),
-                "username": user.get("username"),
-                "nombre": user.get("nombre"),
-                "correo": user.get("correo"),
-                "id_tipo_usuario": user.get("id_tipo_usuario")
-            }
-            return True
-        else:
-            st.sidebar.error("Contraseña incorrecta")
-            return False
+def login_box():
+    user = get_current_user()
+    if user:
+        return user
 
-def logout_user():
-    if SESSION_USER_KEY in st.session_state:
-        del st.session_state[SESSION_USER_KEY]
-        st.experimental_rerun()
+    with st.sidebar.form("login_form", clear_on_submit=False):
+        st.write("### Iniciar sesión")
+        username = st.text_input("Usuario", key="login_user")
+        password = st.text_input("Contraseña", type="password", key="login_pass")
+        submitted = st.form_submit_button("Iniciar sesión")
+        if submitted:
+            rows = run_query("SELECT id, username, nombre, correo, password_hash, id_tipo_usuario FROM users WHERE username=%s LIMIT 1", (username,))
+            if not rows:
+                st.sidebar.error("Usuario no encontrado")
+                return None
+            u = rows[0]
+            if u.get("password_hash") == _hash_password(password):
+                set_current_user({
+                    "id": u.get("id"),
+                    "username": u.get("username"),
+                    "nombre": u.get("nombre"),
+                    "correo": u.get("correo"),
+                    "id_tipo_usuario": u.get("id_tipo_usuario")
+                })
+                st.sidebar.success("Autenticado")
+                st.experimental_rerun()
+            else:
+                st.sidebar.error("Contraseña incorrecta")
+                return None
 
-def current_user():
-    return st.session_state.get(SESSION_USER_KEY)
+    return None
+
+def require_login():
+    user = get_current_user()
+    if not user:
+        user = login_box()
+    return user
