@@ -1,17 +1,18 @@
 # auth/config.py
-"""
-Configuración de autenticación.
-Ajusta AUTH_TABLE, USER_COL, PASS_COL según tu BD.
-Si usas contraseñas en texto plano, deja PASSWORD_HASH = "plain".
-Si usas hash tipo bcrypt, ajusta a "bcrypt" y asegúrate de instalar bcrypt en requirements.
-"""
+import streamlit as st
 
-PROJECT_PDF_PATH = "/mnt/data/Proyecto final rev.pdf"  # ruta del pdf que subiste (opcional)
+def check_login():
+    """
+    Llamar después de login_user() para verificar permisos básicos.
+    Puedes ampliarlo para comprobar roles en la BD.
+    """
+    if "logged_in" not in st.session_state or not st.session_state.logged_in:
+        st.warning("No has iniciado sesión.")
+        st.stop()
 
-# Ajusta según tu BD
-AUTH_TABLE = "administrador"
-AUTH_USER_COL = "correo"   # nombre de columna que contiene el usuario / email
-AUTH_PASS_COL = "password" # nombre de columna que contiene la contraseña
-
-PASSWORD_HASH = "plain"  # "plain" o "bcrypt"
-SESSION_KEY = "auth_user"
+def require_role(role):
+    """Ejemplo: comprobar rol (usa st.session_state['user'] con 'role')."""
+    user = st.session_state.get("user", {})
+    if user.get("role") != role:
+        st.error("No tienes permisos para acceder a este recurso.")
+        st.stop()
