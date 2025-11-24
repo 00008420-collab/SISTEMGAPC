@@ -3,9 +3,8 @@ import streamlit as st
 
 def authenticate(username, password):
     """
-    Autenticación de ejemplo.
-    Cambia esto por verificación real contra tu tabla de usuarios en la BD.
-    Aquí se permite cualquier usuario si la contraseña es 'secret' (ejemplo).
+    Autenticación de ejemplo. Cambia esto por verificación real contra tu BD.
+    Actualmente acepta cualquier usuario si la contraseña es 'secret'.
     """
     if username and password == "secret":
         return {"username": username, "role": "admin"}
@@ -13,9 +12,10 @@ def authenticate(username, password):
 
 def login_user():
     """
-    Muestra formulario de login y guarda en st.session_state:
-    - logged_in: bool
-    - user: dict (username, role, ...)
+    Formulario de login minimalista. Guarda en st.session_state:
+     - logged_in: bool
+     - user: dict (username, role, ...)
+    No usa st.experimental_rerun() para evitar errores en entornos donde no exista.
     """
     if "logged_in" not in st.session_state:
         st.session_state.logged_in = False
@@ -33,8 +33,6 @@ def login_user():
                 st.session_state.logged_in = True
                 st.session_state.user = user
                 st.success(f"Bienvenido, {user['username']} ✅")
-                # opcional: recargar para que el resto de la app continúe
-                st.experimental_rerun()
             else:
                 st.error("Usuario/contraseña incorrectos. (contraseña de ejemplo: 'secret')")
 
@@ -45,4 +43,3 @@ def login_user():
         if st.sidebar.button("Cerrar sesión"):
             st.session_state.logged_in = False
             st.session_state.user = {}
-            st.experimental_rerun()
