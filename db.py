@@ -1,65 +1,83 @@
-# db.py
 import streamlit as st
-import mysql.connector
-from mysql.connector import errorcode
+import pymysql
+from pymysql.cursors import DictCursor
 
-def _get_mysql_config():
-    """
-    Espera en Streamlit secrets:
-    [mysql]
-    host = "..."
-    user = "..."
-    password = "..."
-    database = "..."
-    port = 3306
-    """
-    cfg = st.secrets.get("mysql", {})
-    cfg.setdefault("port", 3306)
-    return cfg
 
-def get_connection():
-    cfg = _get_mysql_config()
+# =====================================================
+# 1. Obtener configuración desde st.secrets["mysql"]
+# =====================================================
+def get_mysql_config():
+    """Lee la configuración MySQL desde Streamlit Secrets."""
     try:
-        conn = mysql.connector.connect(
-            host=cfg.get("host"),
-            user=cfg.get("user"),
-            password=cfg.get("password"),
-            database=cfg.get("database"),
-            port=int(cfg.get("port", 3306)),
-            autocommit=False
-        )
-        return conn
-    except mysql.connector.Error as err:
-        # Mostrar error de forma segura en Streamlit (sin usar atributos privados)
-        try:
-            st.error(f"Error de conexión a la BD: {err}")
-        except Exception:
-            # En caso raro de no poder usar st.error, imprimirlo por consola
-            print(f"Error de conexión a la BD: {err}")
+        cfg = st.secrets["mysql"]
+        return {
+            "host": cfg.get("host"),
+            "user": cfg.get("user"),
+            "password": cfg.get("password"),
+            "database": cfg.get("database"),
+            "port": int(cfg.get("port", 3306)),
+        }
+    except Exception:
+        st.error("❌ No se pudieron cargar los parámetros de la base de datos desde Secrets.")
         return None
 
-def get_table_names():
+
+# =====================================================
+# 2. Crear conexión
+# =====================================================
+def get_connection():
+    """Crea una conexión MySQL reutilizable."""
+    cfg = get_mysql_config()
+
+    if not cfg:
+        return None
+
+    try:
+        conn = pymysql.connect(
+            host=cfg["host"],
+            user=cfg["user"],
+            password=cfg["password"],
+            database=cfg["database"],
+            port=cfg["port"],
+            cursorclass=DictCursor,
+        )
+        return conn
+    except Exception as e:
+        st.error(f"❌ Error de conexión MySQL: {e}")
+        return None
+
+
+# =====================================================
+# 3. Ejecutar consultas SELECT
+# =====================================================
+def run_query(query, params=None):
     conn = get_connection()
     if not conn:
-        return []
+        return None
+
     try:
-        cur = conn.cursor(dictionary=True)
-        cur.execute("SHOW TABLES")
-        rows = cur.fetchall()
-        tablas = []
-        for r in rows:
-            if isinstance(r, dict):
-                tablas.append(list(r.values())[0])
-            elif isinstance(r, (list, tuple)):
-                tablas.append(r[0])
-            else:
-                tablas.append(str(r))
-        cur.close()
+        with conn.cursor() as cursor:
+            cursor.execute(query, params or ())
+            result = cursor.fetchall()
         conn.close()
-        return tablas
+        return result
     except Exception as e:
-        try:
-            st.error(f"Error al listar tablas: {e}")
-        except Exception:
-            print(f"Error al listar tablas: {e}")
-        return []
+        st.error(f"❌ Error ejecutando consulta: {e}")
+        return None
+
+
+# =====================================================
+# 4. Ejecutar INSERT / UPDATE / DELETE
+# =====================================================
+def run_execute(query, params=None):
+    conn = get_connection()
+    if not conn:
+        return False
+
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(query, params or ())
+            conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
