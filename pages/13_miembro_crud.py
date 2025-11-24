@@ -1,103 +1,53 @@
 # pages/13_miembro_crud.py
 import streamlit as st
-from db import get_connection
+from db import run_query
+from auth import user_has_permission
 
-TABLE = "miembro"
-ID_COL = "id_miembro"
+def app():
+    st.header("Miembro — CRUD")
+    user = st.session_state.get("user")
 
-st.title("Miembro — CRUD")
-
-def list_miembros(limit=200):
-    conn=get_connection(); 
-    if not conn: return None
-    try:
-        cur=conn.cursor(dictionary=True); cur.execute(f"SELECT * FROM `{TABLE}` LIMIT %s",(limit,))
-        rows=cur.fetchall(); cur.close(); return rows
-    finally:
-        conn.close()
-
-def create_miembro(id_tipo_usuario,apellido,dui,direccion):
-    conn=get_connection()
-    if not conn: return False
-    try:
-        cur=conn.cursor()
-        cur.execute(f"INSERT INTO `{TABLE}` (id_tipo_usuario,apellido,dui,direccion) VALUES (%s,%s,%s,%s)",
-                    (id_tipo_usuario,apellido,dui,direccion))
-        conn.commit(); cur.close(); return True
-    except Exception as e:
-        st.error(e); return False
-    finally:
-        conn.close()
-
-def get_by_id(pk):
-    conn=get_connection(); 
-    if not conn: return None
-    try:
-        cur=conn.cursor(dictionary=True); cur.execute(f"SELECT * FROM `{TABLE}` WHERE `{ID_COL}`=%s",(pk,))
-        r=cur.fetchone(); cur.close(); return r
-    finally:
-        conn.close()
-
-def update_miembro(pk,id_tipo_usuario,apellido,dui,direccion):
-    conn=get_connection()
-    if not conn: return False
-    try:
-        cur=conn.cursor()
-        cur.execute(f"UPDATE `{TABLE}` SET id_tipo_usuario=%s,apellido=%s,dui=%s,direccion=%s WHERE `{ID_COL}`=%s",
-                    (id_tipo_usuario,apellido,dui,direccion,pk))
-        conn.commit(); cur.close(); return True
-    except Exception as e:
-        st.error(e); return False
-    finally:
-        conn.close()
-
-def delete_miembro(pk):
-    conn=get_connection(); 
-    if not conn: return False
-    try:
-        cur=conn.cursor(); cur.execute(f"DELETE FROM `{TABLE}` WHERE `{ID_COL}`=%s",(pk,))
-        conn.commit(); cur.close(); return True
-    except Exception as e:
-        st.error(e); return False
-    finally:
-        conn.close()
-
-# UI
-with st.expander("Listar miembros"):
-    if st.button("Cargar miembros"):
-        rows=list_miembros()
-        if rows is None: st.error("No conexión")
-        else: st.dataframe(rows)
-
-st.markdown("---")
-st.subheader("Crear miembro")
-with st.form("create_miembro"):
-    id_tipo_usuario = st.text_input("id_tipo_usuario")
-    apellido = st.text_input("apellido")
-    dui = st.text_input("dui")
-    direccion = st.text_input("direccion")
-    if st.form_submit_button("Crear"):
-        ok=create_miembro(id_tipo_usuario,apellido,dui,direccion)
-        st.success("Creado" if ok else "Error al crear")
-
-st.markdown("---")
-st.subheader("Buscar / Editar / Eliminar")
-pk=st.text_input(ID_COL)
-if st.button("Cargar miembro"):
-    if not pk: st.warning("Ingresa id")
+    # Crear miembro (solo si tiene permiso 'alta_usuario' o si es administrador)
+    if user and user_has_permission(user, "alta_usuario"):
+        with st.expander("Crear nuevo miembro"):
+            id_tipo = st.number_input("id_tipo_usuario", value=1, step=1)
+            apellido = st.text_input("apellido")
+            dui = st.text_input("dui")
+            direccion = st.text_input("direccion")
+            if st.button("Crear miembro"):
+                sql = "INSERT INTO miembro (id_tipo_usuario, apellido, dui, direccion) VALUES (%s, %s, %s, %s)"
+                run_query(sql, params=(id_tipo, apellido, dui, direccion))
+                st.success("Miembro creado.")
     else:
-        rec=get_by_id(pk)
-        if not rec: st.info("No encontrado")
+        st.info("No tienes permiso para crear miembros.")
+
+    # Solicitar préstamo (miembro)
+    if user and user_has_permission(user, "solicitar_prestamo"):
+        with st.form("solicitar_prestamo"):
+            monto = st.number_input("Monto solicitado", min_value=1.0)
+            plazo = st.number_input("Plazo (meses)", value=1, step=1)
+            if st.form_submit_button("Enviar solicitud"):
+                # insertar en tabla solicitud
+                payload = {
+                    "monto": monto,
+                    "plazo": plazo
+                }
+                run_query(
+                    "INSERT INTO solicitud (tipo, origen, id_origen, payload) VALUES (%s, %s, %s, %s)",
+                    params=("prestamo", "miembro", None, str(payload))
+                )
+                st.success("Solicitud de préstamo enviada.")
+    else:
+        st.info("No tienes permiso para solicitar préstamos.")
+
+    # Listar miembros (ejemplo)
+    if st.button("Listar miembros"):
+        rows = run_query("SELECT * FROM miembro LIMIT 200", fetch=True)
+        if rows:
+            st.dataframe(rows)
         else:
-            st.json(rec)
-            with st.form("update_miembro"):
-                id_tipo_usuario = st.text_input("id_tipo_usuario", value=str(rec.get("id_tipo_usuario") or ""))
-                apellido = st.text_input("apellido", value=str(rec.get("apellido") or ""))
-                dui = st.text_input("dui", value=str(rec.get("dui") or ""))
-                direccion = st.text_input("direccion", value=str(rec.get("direccion") or ""))
-                if st.form_submit_button("Actualizar"):
-                    ok = update_miembro(pk,id_tipo_usuario,apellido,dui,direccion)
-                    st.success("Actualizado" if ok else "Error al actualizar")
-            if st.button("Eliminar"):
-                ok = delete_miembro(pk)
-                st.success("Eliminado" if ok else "Error al eliminar")
+            st.info("No hay resultos o la consulta falló.")
+
+# Permitir ejecución como script (debug)
+if __name__ == "__main__":
+    app()
