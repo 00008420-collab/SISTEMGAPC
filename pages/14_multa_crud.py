@@ -1,7 +1,6 @@
 # pages/14_multa_crud.py
 import streamlit as st
 from db import get_connection
-from datetime import date
 
 TABLE = "multa"
 ID_COL = "id_multa"
@@ -9,33 +8,66 @@ ID_COL = "id_multa"
 st.title("Multa — CRUD")
 
 def list_multas(limit=200):
-    conn = get_connection()
-    if not conn: return []
+    conn=get_connection(); 
+    if not conn: return None
     try:
-        with conn.cursor() as cur:
-            cur.execute(f"SELECT * FROM `{TABLE}` LIMIT %s",(limit,))
-            return cur.fetchall()
+        cur=conn.cursor(dictionary=True); cur.execute(f"SELECT * FROM `{TABLE}` LIMIT %s",(limit,))
+        rows=cur.fetchall(); cur.close(); return rows
     finally:
         conn.close()
 
-def create_multa(id_miembro, tipo, monto, descripcion, fecha, estado):
-    conn = get_connection()
-    if not conn: return False,"no conn"
+def create_multa(id_miembro,tipo,monto,descripcion,fecha,estado):
+    conn=get_connection()
+    if not conn: return False
     try:
-        with conn.cursor() as cur:
-            cur.execute(f"INSERT INTO `{TABLE}` (`id_miembro`,`tipo`,`monto`,`descripcion`,`fecha`,`estado`) VALUES (%s,%s,%s,%s,%s,%s)",
-                        (id_miembro,tipo,monto,descripcion,fecha,estado))
-            conn.commit()
-            return True,"Creado"
+        cur=conn.cursor()
+        cur.execute(f"INSERT INTO `{TABLE}` (id_miembro,tipo,monto,descripcion,fecha,estado) VALUES (%s,%s,%s,%s,%s,%s)",
+                    (id_miembro,tipo,monto,descripcion,fecha,estado))
+        conn.commit(); cur.close(); return True
     except Exception as e:
-        return False,str(e)
+        st.error(e); return False
     finally:
         conn.close()
 
+def get_by_id(pk):
+    conn=get_connection(); 
+    if not conn: return None
+    try:
+        cur=conn.cursor(dictionary=True); cur.execute(f"SELECT * FROM `{TABLE}` WHERE `{ID_COL}`=%s",(pk,))
+        r=cur.fetchone(); cur.close(); return r
+    finally:
+        conn.close()
+
+def update_multa(pk,id_miembro,tipo,monto,descripcion,fecha,estado):
+    conn=get_connection()
+    if not conn: return False
+    try:
+        cur=conn.cursor()
+        cur.execute(f"UPDATE `{TABLE}` SET id_miembro=%s,tipo=%s,monto=%s,descripcion=%s,fecha=%s,estado=%s WHERE `{ID_COL}`=%s",
+                    (id_miembro,tipo,monto,descripcion,fecha,estado,pk))
+        conn.commit(); cur.close(); return True
+    except Exception as e:
+        st.error(e); return False
+    finally:
+        conn.close()
+
+def delete_multa(pk):
+    conn=get_connection(); 
+    if not conn: return False
+    try:
+        cur=conn.cursor(); cur.execute(f"DELETE FROM `{TABLE}` WHERE `{ID_COL}`=%s",(pk,))
+        conn.commit(); cur.close(); return True
+    except Exception as e:
+        st.error(e); return False
+    finally:
+        conn.close()
+
+# UI
 with st.expander("Listar multas"):
-    limit = st.number_input("Límite",value=200,min_value=10)
     if st.button("Cargar multas"):
-        st.dataframe(list_multas(limit))
+        rows=list_multas()
+        if rows is None: st.error("No conexión")
+        else: st.dataframe(rows)
 
 st.markdown("---")
 st.subheader("Crear multa")
@@ -44,52 +76,32 @@ with st.form("create_multa"):
     tipo = st.text_input("tipo")
     monto = st.number_input("monto", value=0.0)
     descripcion = st.text_area("descripcion")
-    fecha = st.date_input("fecha", value=date.today())
+    fecha = st.date_input("fecha")
     estado = st.text_input("estado")
     if st.form_submit_button("Crear"):
-        ok,msg = create_multa(id_miembro,tipo,monto,descripcion,fecha.isoformat(),estado)
-        if ok: st.success(msg)
-        else: st.error(msg)
+        ok=create_multa(id_miembro,tipo,monto,descripcion,fecha.isoformat(),estado)
+        st.success("Creado" if ok else "Error al crear")
 
 st.markdown("---")
-st.subheader("Buscar / Editar / Eliminar por id_multa")
-buscar = st.text_input("id_multa")
-if st.button("Cargar"):
-    if not buscar: st.warning("Ingresa id")
+st.subheader("Buscar / Editar / Eliminar")
+pk=st.text_input(ID_COL)
+if st.button("Cargar multa"):
+    if not pk: st.warning("Ingresa id")
     else:
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(f"SELECT * FROM `{TABLE}` WHERE `{ID_COL}`=%s",(buscar,))
-                rec = cur.fetchone()
-            if not rec: st.info("No encontrado")
-            else:
-                st.json(rec)
-                with st.form("update_multa"):
-                    id_miembro = st.text_input("id_miembro", value=str(rec.get("id_miembro") or ""))
-                    tipo = st.text_input("tipo", value=str(rec.get("tipo") or ""))
-                    monto = st.number_input("monto", value=float(rec.get("monto") or 0.0))
-                    descripcion = st.text_area("descripcion", value=str(rec.get("descripcion") or ""))
-                    try:
-                        fecha_in = date.fromisoformat(str(rec.get("fecha")))
-                    except Exception:
-                        fecha_in = date.today()
-                    fecha_in = st.date_input("fecha", value=fecha_in)
-                    estado = st.text_input("estado", value=str(rec.get("estado") or ""))
-                    if st.form_submit_button("Actualizar"):
-                        try:
-                            with get_connection().cursor() as cur2:
-                                cur2.execute(f"UPDATE `{TABLE}` SET `id_miembro`=%s,`tipo`=%s,`monto`=%s,`descripcion`=%s,`fecha`=%s,`estado`=%s WHERE `{ID_COL}`=%s",
-                                             (id_miembro,tipo,monto,descripcion,fecha_in.isoformat(),estado,buscar))
-                                get_connection().commit()
-                            st.success("Actualizado")
-                        except Exception as e:
-                            st.error(f"Error: {e}")
-                if st.button("Eliminar"):
-                    try:
-                        with get_connection().cursor() as cur3:
-                            cur3.execute(f"DELETE FROM `{TABLE}` WHERE `{ID_COL}`=%s",(buscar,))
-                            get_connection().commit()
-                        st.success("Eliminado")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
+        rec=get_by_id(pk)
+        if not rec: st.info("No encontrado")
+        else:
+            st.json(rec)
+            with st.form("update_multa"):
+                id_miembro = st.text_input("id_miembro", value=str(rec.get("id_miembro") or ""))
+                tipo = st.text_input("tipo", value=str(rec.get("tipo") or ""))
+                monto = st.number_input("monto", value=float(rec.get("monto") or 0.0))
+                descripcion = st.text_area("descripcion", value=str(rec.get("descripcion") or ""))
+                fecha = st.text_input("fecha", value=str(rec.get("fecha") or ""))
+                estado = st.text_input("estado", value=str(rec.get("estado") or ""))
+                if st.form_submit_button("Actualizar"):
+                    ok = update_multa(pk,id_miembro,tipo,monto,descripcion,fecha,estado)
+                    st.success("Actualizado" if ok else "Error al actualizar")
+            if st.button("Eliminar"):
+                ok = delete_multa(pk)
+                st.success("Eliminado" if ok else "Error al eliminar")
