@@ -3,6 +3,13 @@ import streamlit as st
 from db import run_query
 from auth.login import require_login
 
+# Verificar inicio de sesión
+if "user" not in st.session_state or st.session_state.user is None:
+    st.error("Debes iniciar sesión para acceder a esta página.")
+    st.stop()
+
+user = st.session_state.user
+
 require_login()
 PREFIX = "prestamo_"
 st.set_page_config(layout="wide")
